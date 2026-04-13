@@ -40,13 +40,33 @@ if "last_signal" not in st.session_state:
 if "alerted_trades" not in st.session_state:
     st.session_state.alerted_trades = set()  # Track trades with sent alerts (by ID)
 
+if "timeframe" not in st.session_state:
+    st.session_state.timeframe = TIMEFRAME  # Initialize from config
+
 # ===== UI =====
 header()
+
+# ===== TIMEFRAME SELECTOR =====
+st.markdown("### ⏱️ Select Timeframe")
+timeframe_options = ["1m", "5m", "15m", "1h", "1d"]
+selected_timeframe = st.selectbox(
+    label="Select Timeframe",
+    options=timeframe_options,
+    index=timeframe_options.index(st.session_state.timeframe),
+    key="timeframe_select"
+)
+
+# Update session state if timeframe changed
+if selected_timeframe != st.session_state.timeframe:
+    st.session_state.timeframe = selected_timeframe
+    st.rerun()  # Immediately refresh with new timeframe
+
+st.divider()
 
 # Display current configuration
 col1, col2, col3, col4 = st.columns(4)
 col1.metric("Symbol", SYMBOL)
-col2.metric("Timeframe", TIMEFRAME)
+col2.metric("Timeframe", st.session_state.timeframe)
 col3.metric("Refresh", f"{REFRESH_INTERVAL}s")
 col4.metric("Status", "🟢 Running" if st.session_state.running else "🔴 Stopped")
 
@@ -64,7 +84,8 @@ if stop:
 
 try:
     # ===== LOAD DATA ONCE PER RUN =====
-    df = get_data(SYMBOL, TIMEFRAME)
+    # Use session state timeframe (user selected) instead of config
+    df = get_data(SYMBOL, st.session_state.timeframe)
 
     if df is None:
         st.warning("⚠️ No data available")
