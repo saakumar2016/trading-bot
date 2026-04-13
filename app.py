@@ -1,5 +1,5 @@
 import streamlit as st
-import time
+from streamlit_autorefresh import st_autorefresh
 
 from config import SYMBOL
 from services.data_service import get_data
@@ -12,16 +12,23 @@ from core.levels import get_levels
 from ui.dashboard import header, controls, trade_history
 from ui.components import market_panel, signal_panel
 
-# ===== SESSION =====
+# ===== AUTO REFRESH =====
+st_autorefresh(interval=10000, key="refresh")  # refresh every 10 sec
+
+# ===== SESSION STATE =====
 if "running" not in st.session_state:
     st.session_state.running = False
 
 if "trades" not in st.session_state:
     st.session_state.trades = []
 
-# ===== UI =====
+if "last_signal" not in st.session_state:
+    st.session_state.last_signal = None
+
+# ===== UI HEADER =====
 header()
 
+# ===== CONTROLS =====
 start, stop = controls()
 
 if start:
@@ -30,24 +37,26 @@ if start:
 if stop:
     st.session_state.running = False
 
-# ===== LOOP =====
+# ===== MAIN LOGIC =====
 if st.session_state.running:
-    for _ in range(1000):
 
-        df = get_data(SYMBOL)
+    df = get_data(SYMBOL)
 
-        if df is None:
-            st.warning("No data")
-            time.sleep(5)
-            continue
+    if df is None:
+        st.warning("⚠️ No market data available")
+    else:
+        try:
+            price = round(float(df['Close'].iloc[-1]), 2)
+        except:
+            price = float(df['Close'].iloc[-1].item())
 
-        price = round(df['Close'].iloc[-1], 2)
         trend = get_trend(df)
         support, resistance = get_levels(df)
 
         signal = check_signal(df, trend)
 
-        left, right = st.columns([2,1])
+        # ===== LAYOUT =====
+        left, right = st.columns([2, 1])
 
         with left:
             market_panel(price, trend, support, resistance, df)
@@ -55,13 +64,32 @@ if st.session_state.running:
         with right:
             signal_panel(signal)
 
+        # ===== SIGNAL HANDLING =====
         if signal:
-            send_telegram(str(signal))
-            st.session_state.trades.append(signal)
+            signal_id = f"{signal['type']}_{signal['entry']}"
 
+            if signal_id != st.session_state.last_signal:
+                msg = f"""
+🚨 TRADE SIGNAL
+
+Type: {signal['type']}
+Entry: {signal['entry']}
+SL: {signal['sl']}
+Target: {signal['target']}
+Trend: {trend}
+"""
+
+                send_telegram(msg)
+                st.session_state.trades.append(signal)
+                st.session_state.last_signal = signal_id
+
+        # ===== TRADE HISTORY =====
         trade_history(st.session_state.trades)
 
-        time.sleep(10)
+    st.success("🟢 Bot Running (auto refresh every 10 sec)")
+
+else:
+    st.info("🔴 Bot Stopped — Click Start")
 
 # //////////////////////////////////////
 # //////////////////////////////////////
