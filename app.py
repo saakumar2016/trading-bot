@@ -12,6 +12,8 @@ from core.levels import get_levels
 from ui.dashboard import header, controls, trade_history
 from ui.components import market_panel, signal_panel
 
+st.write("🚀 App Loaded Successfully")
+
 # ===== AUTO REFRESH =====
 st_autorefresh(interval=10000, key="refresh")  # refresh every 10 sec
 
