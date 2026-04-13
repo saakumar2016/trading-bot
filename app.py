@@ -1,102 +1,16 @@
-
 import streamlit as st
 import time
-import requests
-import yfinance as yf
 
-from ui import (
-    render_header,
-    render_controls,
-    render_market,
-    render_signal,
-    render_trade_history
-)
+from config import SYMBOL
+from services.data_service import get_data
+from services.telegram_service import send_telegram
 
-# ===== CONFIG =====
-SYMBOL = "^NSEI"
-TELEGRAM_TOKEN = "YOUR_TOKEN"
-CHAT_ID = "5647013625"
+from core.trend import get_trend
+from core.strategy import check_signal
+from core.levels import get_levels
 
-# ===== TELEGRAM =====
-def send_telegram(msg):
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
-    except:
-        pass
-
-def val(x):
-    try:
-        return float(x)
-    except:
-        return x.item()
-
-# ===== DATA =====
-def get_data():
-    df = yf.download(SYMBOL, period="2d", interval="1m", progress=False, auto_adjust=True)
-    if df is None or df.empty:
-        return None
-
-    df = df.dropna()
-
-    if hasattr(df.columns, "levels"):
-        df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
-
-    return df
-
-# ===== TREND =====
-def get_trend(df):
-    if len(df) < 20:
-        return "SIDEWAYS"
-
-    curr = val(df['Close'].iloc[-1])
-    prev = val(df['Close'].iloc[-16])
-
-    diff = curr - prev
-
-    if abs(diff) < 10:
-        return "SIDEWAYS"
-
-    return "UP" if diff > 0 else "DOWN"
-
-# ===== LEVELS =====
-def get_levels(df):
-    recent = df.tail(80)
-
-    support = round(recent.nsmallest(5, 'Low')['Low'].mean(), 2)
-    resistance = round(recent.nlargest(5, 'High')['High'].mean(), 2)
-
-    return support, resistance
-
-# ===== SIGNAL =====
-def check_signal(df, trend):
-    if len(df) < 5:
-        return None
-
-    c1 = df.iloc[-3]
-    c2 = df.iloc[-2]
-
-    o1, h1, l1, cl1 = val(c1['Open']), val(c1['High']), val(c1['Low']), val(c1['Close'])
-    o2, cl2 = val(c2['Open']), val(c2['Close'])
-
-    body = abs(cl1 - o1)
-    upper_wick = h1 - max(o1, cl1)
-    lower_wick = min(o1, cl1) - l1
-
-    support, resistance = get_levels(df)
-    range_size = resistance - support
-
-    if trend in ["UP", "SIDEWAYS"]:
-        if l1 < support - 5 and cl1 > support and lower_wick > body * 0.8 and cl2 > o2:
-            entry = round(cl2, 2)
-            return {"type":"BUY","entry":entry,"sl":round(l1-10,2),"target":round(entry+range_size*0.6,2)}
-
-    if trend in ["DOWN", "SIDEWAYS"]:
-        if h1 > resistance + 5 and cl1 < resistance and upper_wick > body * 0.8 and cl2 < o2:
-            entry = round(cl2, 2)
-            return {"type":"SELL","entry":entry,"sl":round(h1+10,2),"target":round(entry-range_size*0.6,2)}
-
-    return None
+from ui.dashboard import header, controls, trade_history
+from ui.components import market_panel, signal_panel
 
 # ===== SESSION =====
 if "running" not in st.session_state:
@@ -106,9 +20,9 @@ if "trades" not in st.session_state:
     st.session_state.trades = []
 
 # ===== UI =====
-render_header()
+header()
 
-start, stop = render_controls()
+start, stop = controls()
 
 if start:
     st.session_state.running = True
@@ -116,17 +30,18 @@ if start:
 if stop:
     st.session_state.running = False
 
-# ===== MAIN LOOP =====
+# ===== LOOP =====
 if st.session_state.running:
     for _ in range(1000):
 
-        df = get_data()
+        df = get_data(SYMBOL)
+
         if df is None:
-            st.warning("No data...")
+            st.warning("No data")
             time.sleep(5)
             continue
 
-        price = round(val(df['Close'].iloc[-1]), 2)
+        price = round(df['Close'].iloc[-1], 2)
         trend = get_trend(df)
         support, resistance = get_levels(df)
 
@@ -135,17 +50,16 @@ if st.session_state.running:
         left, right = st.columns([2,1])
 
         with left:
-            render_market(price, trend, support, resistance, df)
+            market_panel(price, trend, support, resistance, df)
 
         with right:
-            render_signal(signal)
+            signal_panel(signal)
 
         if signal:
             send_telegram(str(signal))
-
             st.session_state.trades.append(signal)
 
-        render_trade_history(st.session_state.trades)
+        trade_history(st.session_state.trades)
 
         time.sleep(10)
 
