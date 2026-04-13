@@ -198,9 +198,9 @@ try:
 
     # ===== STATUS =====
     if st.session_state.running:
-        st.success(f"🟢 Bot Running (updates every {REFRESH_INTERVAL}s, timeframe: {TIMEFRAME})")
+        st.success(f"🟢 Bot Running (updates every {REFRESH_INTERVAL}s, timeframe: {st.session_state.timeframe})")
     else:
-        st.info(f"🔴 Bot Stopped (ready on {SYMBOL} {TIMEFRAME})")
+        st.info(f"🔴 Bot Stopped (ready on {SYMBOL} {st.session_state.timeframe})")
         
 except Exception as e:
     st.error(f"❌ Critical error: {str(e)}")
