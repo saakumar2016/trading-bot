@@ -1,6 +1,24 @@
 import streamlit as st
+import pandas as pd
+from typing import Optional, Dict
 
-def market_panel(price, trend, support, resistance, df):
+def market_panel(
+    price: float,
+    trend: str,
+    support: float,
+    resistance: float,
+    df: pd.DataFrame
+) -> None:
+    """
+    Display market analysis panel.
+    
+    Args:
+        price: Current price
+        trend: Current trend
+        support: Support level
+        resistance: Resistance level
+        df: OHLC data
+    """
     st.subheader("📊 Market")
 
     c1, c2, c3 = st.columns(3)
@@ -11,7 +29,13 @@ def market_panel(price, trend, support, resistance, df):
     st.line_chart(df['Close'].tail(100))
 
 
-def signal_panel(signal):
+def signal_panel(signal: Optional[Dict]) -> None:
+    """
+    Display trading signal panel.
+    
+    Args:
+        signal: Signal dictionary or None
+    """
     st.subheader("🚨 Signal")
 
     if signal:

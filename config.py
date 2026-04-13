@@ -1,4 +1,52 @@
-SYMBOL = "^NSEI"
+import os
+import sys
+from dotenv import load_dotenv
 
-TELEGRAM_TOKEN = "YOUR_TOKEN"
-CHAT_ID = "5647013625"
+# Try to import Streamlit for cloud deployment
+try:
+    import streamlit as st
+    HAS_STREAMLIT = True
+except ImportError:
+    HAS_STREAMLIT = False
+
+# Load .env for local development
+load_dotenv()
+
+# === Trading Configuration ===
+# Try Streamlit secrets first, then .env, then defaults
+if HAS_STREAMLIT and hasattr(st, 'secrets'):
+    try:
+        SYMBOL = st.secrets.get("symbol", os.getenv("SYMBOL", "^NSEI"))
+        TIMEFRAME = st.secrets.get("timeframe", os.getenv("TIMEFRAME", "1m"))
+        REFRESH_INTERVAL = int(st.secrets.get("refresh_interval", os.getenv("REFRESH_INTERVAL", "10")))
+        LOG_LEVEL = st.secrets.get("log_level", os.getenv("LOG_LEVEL", "INFO"))
+        TELEGRAM_TOKEN = st.secrets.get("telegram_token", os.getenv("TELEGRAM_TOKEN", ""))
+        CHAT_ID = st.secrets.get("chat_id", os.getenv("CHAT_ID", ""))
+    except Exception as e:
+        # Fall back to .env if secrets fail
+        SYMBOL = os.getenv("SYMBOL", "^NSEI")
+        TIMEFRAME = os.getenv("TIMEFRAME", "1m")
+        REFRESH_INTERVAL = int(os.getenv("REFRESH_INTERVAL", "10"))
+        LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+        TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
+        CHAT_ID = os.getenv("CHAT_ID", "")
+else:
+    # Local development or non-Streamlit environment
+    SYMBOL = os.getenv("SYMBOL", "^NSEI")
+    TIMEFRAME = os.getenv("TIMEFRAME", "1m")
+    REFRESH_INTERVAL = int(os.getenv("REFRESH_INTERVAL", "10"))
+    LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+    TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
+    CHAT_ID = os.getenv("CHAT_ID", "")
+
+# === Validation ===
+if not TELEGRAM_TOKEN or TELEGRAM_TOKEN == "":
+    import warnings
+    warnings.warn("TELEGRAM_TOKEN not set - alerts will not be sent")
+
+# Validate timeframe
+VALID_TIMEFRAMES = ["1m", "5m", "15m", "1h", "1d"]
+if TIMEFRAME not in VALID_TIMEFRAMES:
+    import warnings
+    warnings.warn(f"Invalid TIMEFRAME '{TIMEFRAME}'. Using '1m'. Valid: {VALID_TIMEFRAMES}")
+    TIMEFRAME = "1m"

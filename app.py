@@ -1,7 +1,10 @@
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
+from utils.logger import get_logger
+from utils.trade_storage import save_trade, load_trades
+from utils.analysis import analyze_signal, get_analysis_text
 
-from config import SYMBOL
+from config import SYMBOL, TIMEFRAME, REFRESH_INTERVAL
 from services.data_service import get_data
 from services.telegram_service import send_telegram
 
@@ -12,16 +15,20 @@ from core.levels import get_levels
 from ui.dashboard import header, controls, trade_history
 from ui.components import market_panel, signal_panel
 
+logger = get_logger(__name__)
+
+st.set_page_config(page_title="Trading Bot", page_icon="🤖", layout="wide")
+
 # ===== AUTO REFRESH (ONLY WHEN RUNNING) =====
 if "running" not in st.session_state:
     st.session_state.running = False
 
 if st.session_state.running:
-    st_autorefresh(interval=10000, key="refresh")
+    st_autorefresh(interval=REFRESH_INTERVAL * 1000, key="refresh")
 
 # ===== SESSION =====
 if "trades" not in st.session_state:
-    st.session_state.trades = []
+    st.session_state.trades = load_trades()
 
 if "last_signal" not in st.session_state:
     st.session_state.last_signal = None
@@ -29,41 +36,68 @@ if "last_signal" not in st.session_state:
 # ===== UI =====
 header()
 
+# Display current configuration
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("Symbol", SYMBOL)
+col2.metric("Timeframe", TIMEFRAME)
+col3.metric("Refresh", f"{REFRESH_INTERVAL}s")
+col4.metric("Status", "🟢 Running" if st.session_state.running else "🔴 Stopped")
+
+st.divider()
+
 start, stop = controls()
 
 if start:
     st.session_state.running = True
+    logger.info("Bot started")
 
 if stop:
     st.session_state.running = False
+    logger.info("Bot stopped")
 
-# ===== LOAD DATA ONCE PER RUN =====
-df = get_data(SYMBOL)
+try:
+    # ===== LOAD DATA ONCE PER RUN =====
+    df = get_data(SYMBOL, TIMEFRAME)
 
-if df is None:
-    st.warning("⚠️ No data available")
-    st.stop()
+    if df is None:
+        st.warning("⚠️ No data available")
+        logger.warning("Could not fetch data")
+        st.stop()
 
-price = round(float(df['Close'].iloc[-1]), 2)
-trend = get_trend(df)
-support, resistance = get_levels(df)
-signal = check_signal(df, trend)
+    try:
+        price = round(float(df['Close'].iloc[-1]), 2)
+        trend = get_trend(df)
+        support, resistance = get_levels(df)
+        signal = check_signal(df, trend)
 
-# ===== UI RENDER =====
-left, right = st.columns([2, 1])
+        # ===== UI RENDER =====
+        left, right = st.columns([2, 1])
 
-with left:
-    market_panel(price, trend, support, resistance, df)
+        with left:
+            market_panel(price, trend, support, resistance, df)
 
-with right:
-    signal_panel(signal)
+        with right:
+            signal_panel(signal)
 
-# ===== SIGNAL HANDLING =====
-if signal:
-    signal_id = f"{signal['type']}_{signal['entry']}"
+        # ===== RISK/REWARD ANALYSIS =====
+        if signal:
+            st.divider()
+            analysis = analyze_signal(signal)
+            if analysis:
+                st.text(get_analysis_text(signal))
+                
+                # Risk/Reward metrics
+                cols = st.columns(3)
+                cols[0].metric("Risk Points", f"{analysis.get_risk():.2f}")
+                cols[1].metric("Reward Points", f"{analysis.get_reward():.2f}")
+                cols[2].metric("R/R Ratio", f"1:{analysis.get_risk_reward_ratio():.2f}")
 
-    if signal_id != st.session_state.last_signal:
-        msg = f"""
+        # ===== SIGNAL HANDLING =====
+        if signal:
+            signal_id = f"{signal['type']}_{signal['entry']}"
+
+            if signal_id != st.session_state.last_signal:
+                msg = f"""
 🚨 TRADE SIGNAL
 
 Type: {signal['type']}
@@ -71,19 +105,36 @@ Entry: {signal['entry']}
 SL: {signal['sl']}
 Target: {signal['target']}
 Trend: {trend}
+Support: {support}
+Resistance: {resistance}
+Timeframe: {TIMEFRAME}
 """
-        send_telegram(msg)
-        st.session_state.trades.append(signal)
-        st.session_state.last_signal = signal_id
+                if send_telegram(msg):
+                    logger.info(f"Telegram notification sent: {signal['type']}")
+                
+                # Save trade to file and memory
+                if save_trade(signal):
+                    st.session_state.trades.append(signal)
+                
+                st.session_state.last_signal = signal_id
+                logger.info(f"New signal recorded: {signal['type']} @ {signal['entry']}")
 
-# ===== TRADE HISTORY =====
-trade_history(st.session_state.trades)
+    except Exception as e:
+        st.error(f"❌ Error processing data: {str(e)}")
+        logger.error(f"Error in trading logic: {str(e)}", exc_info=True)
 
-# ===== STATUS =====
-if st.session_state.running:
-    st.success("🟢 Bot Running (updates every 10 sec)")
-else:
-    st.info("🔴 Bot Stopped")
+    # ===== TRADE HISTORY =====
+    trade_history(st.session_state.trades)
+
+    # ===== STATUS =====
+    if st.session_state.running:
+        st.success(f"🟢 Bot Running (updates every {REFRESH_INTERVAL}s, timeframe: {TIMEFRAME})")
+    else:
+        st.info(f"🔴 Bot Stopped (ready on {SYMBOL} {TIMEFRAME})")
+        
+except Exception as e:
+    st.error(f"❌ Critical error: {str(e)}")
+    logger.error(f"Critical error in main app: {str(e)}", exc_info=True)
 
 # //////////////////////////////////////
 # //////////////////////////////////////
