@@ -1,6 +1,5 @@
 import os
 import sys
-from dotenv import load_dotenv
 
 # Try to import Streamlit for cloud deployment
 try:
@@ -9,8 +8,13 @@ try:
 except ImportError:
     HAS_STREAMLIT = False
 
-# Load .env for local development
-load_dotenv()
+# Try to load .env for local development
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    # dotenv not available (OK for Streamlit Cloud, will use env vars)
+    pass
 
 # === Trading Configuration ===
 # Try Streamlit secrets first, then .env, then defaults
