@@ -10,7 +10,7 @@ from utils.analysis import analyze_signal, get_analysis_text
 
 from config import SYMBOL, TIMEFRAME, REFRESH_INTERVAL
 from services.data_service import get_data
-from services.telegram_service import send_telegram
+from services.telegram_service import send_signal_alert, send_win_alert, send_loss_alert
 
 from core.trend import get_trend
 from core.strategy import check_signal
@@ -104,20 +104,9 @@ try:
             signal_id = f"{signal['type']}_{signal['entry']}"
 
             if signal_id != st.session_state.last_signal:
-                msg = f"""
-🚨 TRADE SIGNAL
-
-Type: {signal['type']}
-Entry: {signal['entry']}
-SL: {signal['sl']}
-Target: {signal['target']}
-Trend: {trend}
-Support: {support}
-Resistance: {resistance}
-Timeframe: {TIMEFRAME}
-"""
-                if send_telegram(msg):
-                    logger.info(f"Telegram notification sent: {signal['type']}")
+                # Send structured signal alert
+                if send_signal_alert(signal):
+                    logger.info(f"Signal alert sent: {signal['type']}")
                 
                 # Create full trade object with lifecycle tracking
                 trade = create_trade(signal)
@@ -150,20 +139,15 @@ Timeframe: {TIMEFRAME}
                     # Update CSV
                     update_trade_in_csv(trade)
                     
-                    # Send alert
-                    pnl = trade.get('pnl', 0)
-                    status_emoji = "✅" if trade.get('status') == "WIN" else "❌"
-                    msg = f"""{status_emoji} Trade {trade.get('status')}
-
-ID: {trade_id}
-Type: {trade.get('type')}
-Entry: {trade.get('entry')}
-Exit: {trade.get('exit_price')}
-P&L: {pnl:+.2f} pts
-"""
-                    if send_telegram(msg):
-                        st.session_state.alerted_trades.add(trade_id)
-                        logger.info(f"Trade alert sent: {trade_id} - {trade.get('status')}")
+                    # Send structured alert based on status
+                    if trade.get('status') == "WIN":
+                        if send_win_alert(trade):
+                            st.session_state.alerted_trades.add(trade_id)
+                            logger.info(f"Win alert sent: {trade_id}")
+                    elif trade.get('status') == "LOSS":
+                        if send_loss_alert(trade):
+                            st.session_state.alerted_trades.add(trade_id)
+                            logger.info(f"Loss alert sent: {trade_id}")
             
             logger.info(f"Closed: {close_stats['closed_count']}, Wins: {close_stats['win_count']}, Losses: {close_stats['loss_count']}")
 
