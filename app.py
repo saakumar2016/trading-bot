@@ -1,18 +1,143 @@
+import streamlit as st
+import yfinance as yf
+import time
+import requests
+from datetime import datetime
+
+# ===== CONFIG =====
+SYMBOL = "^NSEI"
+TELEGRAM_TOKEN = "YOUR_TOKEN"
+CHAT_ID = "5647013625"
+
+# ===== TELEGRAM =====
+def send_telegram(msg):
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        requests.post(url, data={"chat_id": CHAT_ID, "text": msg}, timeout=5)
+    except:
+        pass
+
+# ===== SAFE VALUE =====
+def val(x):
+    try:
+        return float(x)
+    except:
+        return x.item()
+
+# ===== GET DATA =====
+def get_data():
+    df = yf.download(SYMBOL, period="2d", interval="1m", progress=False, auto_adjust=True)
+
+    if df is None or df.empty:
+        return None
+
+    df = df.dropna()
+
+    # Fix multi-index columns
+    if hasattr(df.columns, "levels"):
+        df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
+
+    return df
+
+# ===== TREND =====
+def get_trend(df):
+    if len(df) < 20:
+        return "SIDEWAYS"
+
+    curr = val(df['Close'].iloc[-1])
+    prev = val(df['Close'].iloc[-16])
+
+    diff = curr - prev
+
+    if abs(diff) < 10:
+        return "SIDEWAYS"
+    return "UP" if diff > 0 else "DOWN"
+
+# ===== LEVELS =====
+def get_levels(df):
+    recent = df.tail(80)
+
+    support = round(recent.nsmallest(5, 'Low')['Low'].mean(), 2)
+    resistance = round(recent.nlargest(5, 'High')['High'].mean(), 2)
+
+    return support, resistance
+
+# ===== SIGNAL LOGIC =====
+def check_signal(df, trend):
+    if len(df) < 5:
+        return None
+
+    signal_candle = df.iloc[-3]
+    confirm_candle = df.iloc[-2]
+
+    o1, h1, l1, c1 = val(signal_candle['Open']), val(signal_candle['High']), val(signal_candle['Low']), val(signal_candle['Close'])
+    o2, c2 = val(confirm_candle['Open']), val(confirm_candle['Close'])
+
+    body = abs(c1 - o1)
+    upper_wick = h1 - max(o1, c1)
+    lower_wick = min(o1, c1) - l1
+
+    support, resistance = get_levels(df)
+
+    # ===== VOLATILITY FILTER =====
+    recent_range = df.tail(20)['High'].max() - df.tail(20)['Low'].min()
+    if recent_range < 30:
+        return None
+
+    range_size = resistance - support
+
+    # ===== BUY =====
+    if trend in ["UP", "SIDEWAYS"]:
+        if l1 < support - 5 and c1 > support and lower_wick > body * 0.8 and c2 > o2:
+            entry = round(c2, 2)
+            return {
+                "type": "BUY",
+                "entry": entry,
+                "sl": round(l1 - 10, 2),
+                "target": round(entry + (range_size * 0.6), 2),
+                "support": support,
+                "resistance": resistance
+            }
+
+    # ===== SELL =====
+    if trend in ["DOWN", "SIDEWAYS"]:
+        if h1 > resistance + 5 and c1 < resistance and upper_wick > body * 0.8 and c2 < o2:
+            entry = round(c2, 2)
+            return {
+                "type": "SELL",
+                "entry": entry,
+                "sl": round(h1 + 10, 2),
+                "target": round(entry - (range_size * 0.6), 2),
+                "support": support,
+                "resistance": resistance
+            }
+
+    return None
+
+# ===== STREAMLIT UI =====
 st.title("📊 NIFTY Smart Bot")
 
-run = st.button("▶️ Start Bot")
+if "running" not in st.session_state:
+    st.session_state.running = False
 
-if run:
-    st.success("Bot Running 🚀")
+if st.button("▶️ Start Bot"):
+    st.session_state.running = True
 
-    placeholder = st.empty()
+if st.button("⛔ Stop Bot"):
+    st.session_state.running = False
 
-    for i in range(1000):  # controlled loop
+placeholder = st.empty()
+
+last_signal = None
+
+# ===== MAIN LOOP =====
+if st.session_state.running:
+    for _ in range(1000):
 
         df = get_data()
 
         if df is None:
-            st.write("No data...")
+            st.warning("No data...")
             time.sleep(5)
             continue
 
@@ -20,11 +145,8 @@ if run:
         price = round(val(df['Close'].iloc[-1]), 2)
         support, resistance = get_levels(df)
 
-        update_results(price)
-
         signal = check_signal(df, trend)
 
-        # UI DISPLAY
         with placeholder.container():
             st.markdown("### 📊 Market Status")
             st.write(f"Price: {price}")
@@ -32,17 +154,14 @@ if run:
             st.write(f"Support: {support}")
             st.write(f"Resistance: {resistance}")
 
-        # SIGNAL
         if signal:
             signal_id = f"{signal['type']}_{signal['entry']}"
 
-            global last_signal
             if signal_id != last_signal:
-
                 msg = f"""
-🚨 TRADE
+🚨 TRADE SIGNAL
 
-{signal['type']}
+Type: {signal['type']}
 Entry: {signal['entry']}
 SL: {signal['sl']}
 Target: {signal['target']}
@@ -52,7 +171,6 @@ Trend: {trend}
                 st.success(msg)
                 send_telegram(msg)
 
-                open_trades.append(signal)
                 last_signal = signal_id
 
         time.sleep(10)
