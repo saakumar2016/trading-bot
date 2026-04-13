@@ -1,7 +1,11 @@
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 from utils.logger import get_logger
-from utils.trade_storage import save_trade, load_trades
+from utils.trade_storage import (
+    save_trade, load_trades, create_trade, 
+    update_trades_with_price, update_trade_in_csv,
+    get_trade_stats, STATUS_PENDING
+)
 from utils.analysis import analyze_signal, get_analysis_text
 
 from config import SYMBOL, TIMEFRAME, REFRESH_INTERVAL
@@ -32,6 +36,9 @@ if "trades" not in st.session_state:
 
 if "last_signal" not in st.session_state:
     st.session_state.last_signal = None
+
+if "alerted_trades" not in st.session_state:
+    st.session_state.alerted_trades = set()  # Track trades with sent alerts (by ID)
 
 # ===== UI =====
 header()
@@ -112,18 +119,76 @@ Timeframe: {TIMEFRAME}
                 if send_telegram(msg):
                     logger.info(f"Telegram notification sent: {signal['type']}")
                 
+                # Create full trade object with lifecycle tracking
+                trade = create_trade(signal)
+                
                 # Save trade to file and memory
-                if save_trade(signal):
-                    st.session_state.trades.append(signal)
+                if save_trade(trade):
+                    st.session_state.trades.append(trade)
+                    logger.info(f"Trade recorded: {trade['id']} - {trade['type']} @ {trade['entry']}")
                 
                 st.session_state.last_signal = signal_id
-                logger.info(f"New signal recorded: {signal['type']} @ {signal['entry']}")
+        
+        # ===== CHECK PENDING TRADES =====
+        # Update all pending trades with current price
+        st.session_state.trades, close_stats = update_trades_with_price(
+            st.session_state.trades, 
+            price
+        )
+        
+        # If any trades closed, update CSV and send alerts
+        if close_stats['closed_count'] > 0:
+            for trade in st.session_state.trades:
+                trade_id = trade.get('id')
+                
+                # Skip if already alerted
+                if trade_id in st.session_state.alerted_trades:
+                    continue
+                
+                # If trade is closed (WIN/LOSS), send individual alert
+                if trade.get('status') != STATUS_PENDING and trade_id:
+                    # Update CSV
+                    update_trade_in_csv(trade)
+                    
+                    # Send alert
+                    pnl = trade.get('pnl', 0)
+                    status_emoji = "✅" if trade.get('status') == "WIN" else "❌"
+                    msg = f"""{status_emoji} Trade {trade.get('status')}
+
+ID: {trade_id}
+Type: {trade.get('type')}
+Entry: {trade.get('entry')}
+Exit: {trade.get('exit_price')}
+P&L: {pnl:+.2f} pts
+"""
+                    if send_telegram(msg):
+                        st.session_state.alerted_trades.add(trade_id)
+                        logger.info(f"Trade alert sent: {trade_id} - {trade.get('status')}")
+            
+            logger.info(f"Closed: {close_stats['closed_count']}, Wins: {close_stats['win_count']}, Losses: {close_stats['loss_count']}")
 
     except Exception as e:
         st.error(f"❌ Error processing data: {str(e)}")
         logger.error(f"Error in trading logic: {str(e)}", exc_info=True)
 
     # ===== TRADE HISTORY =====
+    # Display trade statistics
+    if st.session_state.trades:
+        stats = get_trade_stats(st.session_state.trades)
+        
+        st.divider()
+        st.subheader("📊 Trade Statistics")
+        
+        col1, col2, col3, col4, col5 = st.columns(5)
+        col1.metric("Total Trades", stats['total'])
+        col2.metric("Pending", stats['pending'])
+        col3.metric("Won", stats['won'])
+        col4.metric("Lost", stats['lost'])
+        col5.metric("Win Rate", f"{stats['win_rate']:.1f}%")
+        
+        st.metric("Total P&L", f"{stats['total_pnl']:.2f} pts", 
+                 delta="Profit" if stats['total_pnl'] > 0 else "Loss")
+    
     trade_history(st.session_state.trades)
 
     # ===== STATUS =====
