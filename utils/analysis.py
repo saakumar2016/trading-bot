@@ -97,3 +97,41 @@ def analyze_trade_performance(trades: List[Dict]) -> Dict:
         "avg_loss": round(avg_loss, 2),
         "risk_reward_ratio": round(risk_reward_ratio, 2)
     }
+
+
+def _format_analysis_text(signal: Dict) -> str:
+    trade_type = signal.get('type', 'UNKNOWN')
+    entry = signal.get('entry', 0)
+    sl = signal.get('sl', 0)
+    target = signal.get('target', 0)
+
+    return f"""
+╔════════════════════════════════════╗
+║     RISK/REWARD ANALYSIS            ║
+╚════════════════════════════════════╝
+
+📊 Trade Setup:
+  Type:              {trade_type}
+  Entry:             {entry:.2f}
+  Stop Loss:         {sl:.2f}
+  Target:            {target:.2f}
+"""
+
+
+def analyze_signal(signal: Optional[Dict]) -> Optional[Dict]:
+    if not signal:
+        return None
+
+    try:
+        return signal
+    except Exception as e:
+        logger.error(f"Error analyzing signal: {str(e)}")
+        return None
+
+
+def get_analysis_text(signal: Optional[Dict]) -> str:
+    if not signal:
+        return ""
+
+    return _format_analysis_text(signal)
+
