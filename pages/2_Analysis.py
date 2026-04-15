@@ -12,8 +12,6 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-st.set_page_config(page_title="Analysis", page_icon="📈", layout="wide")
-
 st.title("📈 Signal Analysis")
 
 st.markdown("""

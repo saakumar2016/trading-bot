@@ -10,8 +10,6 @@ from utils.performance import analyze_trade_performance
 
 logger = get_logger(__name__)
 
-st.set_page_config(page_title="Backtest", page_icon="📊", layout="wide")
-
 st.title("📊 Backtest Strategy")
 
 st.markdown("""
