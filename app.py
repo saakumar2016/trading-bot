@@ -7,7 +7,7 @@ from utils.trade_storage import (
     get_trade_stats, STATUS_PENDING
 )
 from utils.analysis import analyze_signal, get_analysis_text
-from utils.performance import analyze_trade_performance
+from utils.analysis import analyze_trade_performance
 
 from config import SYMBOL, TIMEFRAME, REFRESH_INTERVAL
 from services.data_service import get_data

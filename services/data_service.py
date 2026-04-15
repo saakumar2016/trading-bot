@@ -1,5 +1,6 @@
 import pandas as pd
 from typing import Optional
+from datetime import datetime, timedelta
 from utils.logger import get_logger
 from config import TIMEFRAME, DATA_SOURCE, DHAN_CLIENT_ID, DHAN_ACCESS_TOKEN
 
@@ -96,7 +97,57 @@ def _validate_dataframe(df: pd.DataFrame) -> bool:
         logger.error(f"Dhan OHLC data has too few candles: {len(df)} < 80")
         return False
 
+    # Check if last candle is recent (not stale)
+    if 'timestamp' in df.columns:
+        try:
+            last_timestamp = pd.to_datetime(df['timestamp'].iloc[-1])
+            now = datetime.now()
+            # Allow up to 5 minutes staleness for intraday data
+            max_age = timedelta(minutes=5)
+            if now - last_timestamp > max_age:
+                logger.error(f"Dhan data is stale: last candle at {last_timestamp}, current time {now}")
+                return False
+        except Exception as e:
+            logger.warning(f"Could not validate timestamp freshness: {str(e)}")
+
     return True
+
+
+def _fetch_with_retry(symbol: str, timeframe: str, max_retries: int = 3) -> Optional[pd.DataFrame]:
+    """
+    Fetch data from Dhan with retry mechanism.
+
+    Args:
+        symbol: Mapped symbol
+        timeframe: Timeframe
+        max_retries: Maximum number of retry attempts
+
+    Returns:
+        DataFrame or None if all retries fail
+    """
+    for attempt in range(max_retries):
+        try:
+            logger.debug(f"Fetching Dhan data for {symbol} at {timeframe} (attempt {attempt + 1}/{max_retries})")
+            df = get_dhan_ohlc(symbol, timeframe)
+
+            if df is not None:
+                logger.info(f"Successfully fetched Dhan data for {symbol} at {timeframe} on attempt {attempt + 1}")
+                return df
+            else:
+                logger.warning(f"Dhan returned no data for {symbol} at {timeframe} (attempt {attempt + 1})")
+
+        except Exception as e:
+            logger.error(f"Dhan fetch failed for {symbol} at {timeframe} (attempt {attempt + 1}): {str(e)}")
+
+        # Wait before retry (exponential backoff)
+        if attempt < max_retries - 1:
+            import time
+            wait_time = 2 ** attempt  # 1s, 2s, 4s
+            logger.info(f"Retrying in {wait_time} seconds...")
+            time.sleep(wait_time)
+
+    logger.error(f"All {max_retries} attempts failed for Dhan data fetch: {symbol} at {timeframe}")
+    return None
 
 
 def get_data(symbol: str, timeframe: str = None) -> Optional[pd.DataFrame]:
@@ -128,10 +179,12 @@ def get_data(symbol: str, timeframe: str = None) -> Optional[pd.DataFrame]:
 
     mapped_symbol = _map_symbol(symbol)
     logger.debug(f"Fetching OHLC data from Dhan for {mapped_symbol} at {timeframe}")
-    df = get_dhan_ohlc(mapped_symbol, timeframe)
+
+    # Use retry mechanism
+    df = _fetch_with_retry(mapped_symbol, timeframe, max_retries=3)
 
     if df is None:
-        logger.error(f"Dhan returned no data for {mapped_symbol} at {timeframe}")
+        logger.error(f"Failed to fetch data from Dhan for {mapped_symbol} at {timeframe} after retries")
         return None
 
     df = _normalize_dataframe(df)

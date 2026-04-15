@@ -70,8 +70,9 @@ def check_signal(df: pd.DataFrame, trend: str) -> Optional[Dict]:
                 entry = round(cl2, 2)
                 sl = round(l1 - SL_BUFFER, 2)
 
-                # 🎯 realistic intraday target
-                target = round(entry + (range_size * 0.3), 2)
+                # 🎯 realistic intraday target with level constraints
+                raw_target = round(entry + (range_size * 0.3), 2)
+                target = round(min(raw_target, resistance - 5), 2)  # Don't exceed resistance
 
                 risk = entry - sl
                 reward = target - entry
@@ -103,8 +104,9 @@ def check_signal(df: pd.DataFrame, trend: str) -> Optional[Dict]:
                 entry = round(cl2, 2)
                 sl = round(h1 + SL_BUFFER, 2)
 
-                # 🎯 realistic intraday target
-                target = round(entry - (range_size * 0.3), 2)
+                # 🎯 realistic intraday target with level constraints
+                raw_target = round(entry - (range_size * 0.3), 2)
+                target = round(max(raw_target, support + 5), 2)  # Don't go below support
 
                 risk = sl - entry
                 reward = entry - target
