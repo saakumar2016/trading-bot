@@ -141,26 +141,26 @@ try:
                 st.session_state.last_signal = signal_id
         
         # ===== CHECK PENDING TRADES =====
-        # Update all pending trades with current price
+        # Update all pending trades with current price on every refresh
         st.session_state.trades, close_stats = update_trades_with_price(
-            st.session_state.trades, 
+            st.session_state.trades,
             price
         )
-        
+
         # If any trades closed, update CSV and send alerts
         if close_stats['closed_count'] > 0:
             for trade in st.session_state.trades:
                 trade_id = trade.get('id')
-                
+
                 # Skip if already alerted
                 if trade_id in st.session_state.alerted_trades:
                     continue
-                
+
                 # If trade is closed (WIN/LOSS), send individual alert
                 if trade.get('status') != STATUS_PENDING and trade_id:
                     # Update CSV
                     update_trade_in_csv(trade)
-                    
+
                     # Send structured alert based on status
                     if trade.get('status') == "WIN":
                         if send_win_alert(trade):
@@ -170,37 +170,36 @@ try:
                         if send_loss_alert(trade):
                             st.session_state.alerted_trades.add(trade_id)
                             logger.info(f"Loss alert sent: {trade_id}")
-            
+
             logger.info(f"Closed: {close_stats['closed_count']}, Wins: {close_stats['win_count']}, Losses: {close_stats['loss_count']}")
 
     except Exception as e:
         st.error(f"❌ Error processing data: {str(e)}")
         logger.error(f"Error in trading logic: {str(e)}", exc_info=True)
 
-    # ===== TRADE HISTORY =====
-    # Display trade statistics
+    # ===== DASHBOARD METRICS =====
     if st.session_state.trades:
         stats = get_trade_stats(st.session_state.trades)
         performance = analyze_trade_performance(st.session_state.trades)
-        
-        st.divider()
-        st.subheader("📊 Trade Statistics")
-        
-        col1, col2, col3, col4, col5 = st.columns(5)
-        col1.metric("Total Trades", stats['total'])
-        col2.metric("Pending", stats['pending'])
-        col3.metric("Won", stats['won'])
-        col4.metric("Lost", stats['lost'])
-        col5.metric("Win Rate", f"{stats['win_rate']:.1f}%")
-        
-        st.metric("Total P&L", f"{performance['total_pnl']:.2f} pts", 
-                 delta="Profit" if performance['total_pnl'] > 0 else "Loss")
 
-        col6, col7, col8 = st.columns(3)
-        col6.metric("Avg Win", f"{performance['avg_win']:.2f} pts")
-        col7.metric("Avg Loss", f"{performance['avg_loss']:.2f} pts")
-        col8.metric("R/R Ratio", f"{performance['risk_reward_ratio']:.2f}")
-    
+        st.divider()
+        st.subheader("📊 Trading Dashboard")
+
+        # Main metrics row
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Total Trades", stats['total'])
+        col2.metric("Win Rate %", f"{stats['win_rate']:.1f}")
+        col3.metric("Total P&L", f"{performance['total_pnl']:.2f} pts",
+                   delta="Profit" if performance['total_pnl'] > 0 else "Loss")
+        col4.metric("Active Trades", stats['pending'])
+
+        # Additional performance metrics
+        col5, col6, col7 = st.columns(3)
+        col5.metric("Avg Win", f"{performance['avg_win']:.2f} pts")
+        col6.metric("Avg Loss", f"{performance['avg_loss']:.2f} pts")
+        col7.metric("R/R Ratio", f"{performance['risk_reward_ratio']:.2f}")
+
+    # ===== TRADE HISTORY =====
     trade_history(st.session_state.trades)
 
     # ===== STATUS =====
