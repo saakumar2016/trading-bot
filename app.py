@@ -126,18 +126,18 @@ try:
             signal_id = f"{signal['type']}_{signal['entry']}"
 
             if signal_id != st.session_state.last_signal:
-                # Send structured signal alert
-                if send_signal_alert(signal):
-                    logger.info(f"Signal alert sent: {signal['type']}")
-                
                 # Create full trade object with lifecycle tracking
                 trade = create_trade(signal)
-                
+
+                # Send structured signal alert with trade id tracking
+                if send_signal_alert(trade):
+                    logger.info(f"Signal alert sent: {trade['id']}")
+
                 # Save trade to file and memory
                 if save_trade(trade):
                     st.session_state.trades.append(trade)
                     logger.info(f"Trade recorded: {trade['id']} - {trade['type']} @ {trade['entry']}")
-                
+
                 st.session_state.last_signal = signal_id
         
         # ===== CHECK PENDING TRADES =====

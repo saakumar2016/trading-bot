@@ -62,24 +62,14 @@ def send_telegram(msg: str) -> bool:
 def format_signal_alert(signal: Dict) -> str:
     """
     Format a structured message for new trade signal.
-    
+
     Args:
-        signal: Signal dict with type, entry, sl, target, trend, support, resistance
-        
+        signal: Signal or trade dict with id, type, entry, sl, target, trend, support, resistance
+
     Returns:
         Formatted message string
-        
-    Example output:
-        🚨 NEW SIGNAL
-        ─────────────
-        Type: BUY
-        Entry: 45123.50
-        SL: 45100.00
-        Target: 45200.00
-        Trend: UP
-        Support: 45080.00
-        Resistance: 45300.00
     """
+    trade_id = signal.get("id", "UNKNOWN")
     trade_type = signal.get("type", "UNKNOWN")
     entry = signal.get("entry", 0)
     sl = signal.get("sl", 0)
@@ -87,17 +77,19 @@ def format_signal_alert(signal: Dict) -> str:
     trend = signal.get("trend", "UNKNOWN")
     support = signal.get("support", 0)
     resistance = signal.get("resistance", 0)
-    
+
     msg = f"""🚨 NEW SIGNAL
-─────────────
+─────────────────
+ID: {trade_id}
 Type: {trade_type}
 Entry: {entry:.2f}
 SL: {sl:.2f}
 Target: {target:.2f}
+Result: PENDING
 Trend: {trend}
 Support: {support:.2f}
 Resistance: {resistance:.2f}"""
-    
+
     return msg
 
 
@@ -137,6 +129,7 @@ Type: {trade_type}
 Entry: {entry:.2f}
 SL: {sl:.2f}
 Target: {target:.2f}
+Result: WIN
 Exit: {exit_price:.2f}
 P&L: +{pnl:.2f} pts"""
     
@@ -179,6 +172,7 @@ Type: {trade_type}
 Entry: {entry:.2f}
 SL: {sl:.2f}
 Target: {target:.2f}
+Result: LOSS
 Exit: {exit_price:.2f}
 P&L: {pnl:.2f} pts"""
     
@@ -188,24 +182,29 @@ P&L: {pnl:.2f} pts"""
 def send_signal_alert(signal: Dict) -> bool:
     """
     Send alert for new trade signal.
-    
+
     Args:
-        signal: Signal dict with all trade details
-        
+        signal: Signal or trade dict with all trade details
+
     Returns:
         True if sent successfully, False otherwise
     """
+    trade_id = signal.get("id")
     msg = format_signal_alert(signal)
-    msg_hash = hash(f"signal_{signal.get('type')}_{signal.get('entry')}")
-    
+
+    if trade_id:
+        msg_hash = hash(f"signal_{trade_id}")
+    else:
+        msg_hash = hash(f"signal_{signal.get('type')}_{signal.get('entry')}")
+
     if _is_sent(msg_hash):
         logger.debug("Signal alert already sent (duplicate prevention)")
         return False
-    
+
     success = send_telegram(msg)
     if success:
         _add_sent_message(msg_hash)
-    
+
     return success
 
 
