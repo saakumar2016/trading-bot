@@ -68,16 +68,17 @@ class DhanClient:
             return None
         
         try:
-            # Dhan API format: exchange=NSE, trading_symbol=symbol
+            # Dhan API format with correct parameters
             quote = self.client.get_quote(
                 security_id=symbol,
-                exchange_token="NSE"
+                exchange_segment="IDX_I"
             )
             
             if quote and isinstance(quote, dict):
                 price = quote.get('ltp') or quote.get('close')
-                logger.debug(f"Live price for {symbol}: {price}")
-                return price
+                if price:
+                    logger.debug(f"Live price for {symbol}: {price}")
+                    return float(price)
             
             logger.warning(f"No price data received for {symbol}")
             return None
@@ -116,10 +117,10 @@ class DhanClient:
             # Determine number of candles and lookback period
             num_candles = self._get_num_candles(timeframe)
             
-            # Fetch candles
-            candles = self.client.intra_day_data(
+            # Fetch candles with correct Dhan API parameters
+            candles = self.client.historical_candle_data(
                 security_id=symbol,
-                exchange_token="NSE",
+                exchange_segment="IDX_I",
                 interval=dhan_interval,
                 count=num_candles
             )
@@ -194,11 +195,27 @@ class DhanClient:
             DataFrame with Open, High, Low, Close columns
         """
         if not candles:
+            logger.error("Empty candle list provided")
             return None
         
         try:
             # Expected format: list of dicts with keys: timestamp, open, high, low, close, volume
-            df = pd.DataFrame(candles)
+            data = []
+            for candle in candles:
+                if isinstance(candle, dict):
+                    data.append(candle)
+                elif hasattr(candle, '__dict__'):
+                    data.append(candle.__dict__)
+            
+            if not data:
+                logger.error("No valid candle data to convert")
+                return None
+            
+            df = pd.DataFrame(data)
+            
+            if df.empty:
+                logger.error("DataFrame conversion resulted in empty dataframe")
+                return None
             
             # Normalize column names (case-insensitive)
             df.columns = df.columns.str.lower()
@@ -208,7 +225,7 @@ class DhanClient:
             missing = [col for col in required_cols if col not in df.columns]
             
             if missing:
-                logger.error(f"Missing columns in Dhan response: {missing}")
+                logger.error(f"Missing columns in Dhan response: {missing}. Available: {list(df.columns)}")
                 return None
             
             # Select and rename columns
@@ -219,13 +236,12 @@ class DhanClient:
             for col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
             
-            # Handle index
-            if 'timestamp' in df.columns:
-                df['timestamp'] = pd.to_datetime(df['timestamp'])
-                df.set_index('timestamp', inplace=True)
-            
             # Drop NaN values
             df = df.dropna()
+            
+            if df.empty:
+                logger.error("DataFrame is empty after numeric conversion and NaN dropping")
+                return None
             
             return df
             
