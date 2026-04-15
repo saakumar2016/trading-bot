@@ -95,19 +95,19 @@ def calculate_pnl(trade: Dict) -> Optional[float]:
         return None
 
 
-def update_trade_status(trade: Dict, current_price: float) -> Tuple[Dict, bool]:
+def _update_trade_status(trade: Dict, current_price: float) -> Tuple[Dict, bool]:
     """
-    Update trade status based on current price.
-    
+    Update a single trade status based on current price.
+
     Checks if trade reached target (WIN) or stop loss (LOSS).
-    
+
     Args:
         trade: Trade dictionary to update
         current_price: Current market price
-        
+
     Returns:
         Tuple of (updated_trade, status_changed)
-        
+
     Logic:
         BUY:
             - if price >= target → WIN
@@ -118,14 +118,14 @@ def update_trade_status(trade: Dict, current_price: float) -> Tuple[Dict, bool]:
     """
     if trade.get('status') != STATUS_PENDING:
         return trade, False
-    
+
     trade_type = trade.get('type', '')
     entry = float(trade.get('entry', 0))
     sl = float(trade.get('sl', 0))
     target = float(trade.get('target', 0))
-    
+
     status_changed = False
-    
+
     try:
         if trade_type == 'BUY':
             # BUY: profit if price rises to target, loss if falls to SL
@@ -135,14 +135,14 @@ def update_trade_status(trade: Dict, current_price: float) -> Tuple[Dict, bool]:
                 trade['exit_time'] = datetime.now().isoformat()
                 status_changed = True
                 logger.info(f"Trade {trade['id']}: BUY reached target {target}")
-                
+
             elif current_price <= sl:
                 trade['status'] = STATUS_LOSS
                 trade['exit_price'] = sl
                 trade['exit_time'] = datetime.now().isoformat()
                 status_changed = True
                 logger.info(f"Trade {trade['id']}: BUY hit SL {sl}")
-        
+
         elif trade_type == 'SELL':
             # SELL: profit if price falls to target, loss if rises to SL
             if current_price <= target:
@@ -151,34 +151,34 @@ def update_trade_status(trade: Dict, current_price: float) -> Tuple[Dict, bool]:
                 trade['exit_time'] = datetime.now().isoformat()
                 status_changed = True
                 logger.info(f"Trade {trade['id']}: SELL reached target {target}")
-                
+
             elif current_price >= sl:
                 trade['status'] = STATUS_LOSS
                 trade['exit_price'] = sl
                 trade['exit_time'] = datetime.now().isoformat()
                 status_changed = True
                 logger.info(f"Trade {trade['id']}: SELL hit SL {sl}")
-        
+
         # Calculate P&L if status changed
         if status_changed:
             trade['pnl'] = calculate_pnl(trade)
-        
+
     except (ValueError, TypeError) as e:
         logger.error(f"Error updating trade status: {str(e)}")
-    
+
     return trade, status_changed
 
 
-def update_trades_with_price(trades: List[Dict], current_price: float) -> Tuple[List[Dict], Dict]:
+def update_trade_status(trades: List[Dict], current_price: float) -> Tuple[List[Dict], Dict]:
     """
-    Update all pending trades with current price.
-    
+    Update all pending trades with current price in place.
+
     Args:
         trades: List of trade dictionaries
         current_price: Current market price
-        
+
     Returns:
-        Tuple of (updated_trades, stats_dict with closed_count and pnl_total)
+        Tuple of (updated_trades, stats_dict with closed_count, win_count, loss_count, total_pnl)
     """
     stats = {
         'closed_count': 0,
@@ -186,20 +186,24 @@ def update_trades_with_price(trades: List[Dict], current_price: float) -> Tuple[
         'loss_count': 0,
         'total_pnl': 0.0
     }
-    
+
     for trade in trades:
-        updated_trade, changed = update_trade_status(trade, current_price)
+        updated_trade, changed = _update_trade_status(trade, current_price)
         if changed:
             stats['closed_count'] += 1
             if updated_trade['status'] == STATUS_WIN:
                 stats['win_count'] += 1
             elif updated_trade['status'] == STATUS_LOSS:
                 stats['loss_count'] += 1
-            
-            if updated_trade.get('pnl'):
+
+            if updated_trade.get('pnl') is not None:
                 stats['total_pnl'] += updated_trade['pnl']
-    
+
     return trades, stats
+
+
+# Preserve legacy helper name for code that still calls update_trades_with_price
+update_trades_with_price = update_trade_status
 
 
 def save_trade(trade: Dict) -> bool:
