@@ -7,20 +7,16 @@ from utils.trade_storage import (
     get_trade_stats, STATUS_PENDING, has_active_trade,
     STATUS_WIN, STATUS_LOSS, STATUS_TIMEOUT
 )
-from utils.analysis import analyze_signal, get_analysis_text
-from utils.analysis import analyze_trade_performance
-
+from utils.analysis import analyze_signal, get_analysis_text, analyze_trade_performance
 from config import SYMBOL, TIMEFRAME, REFRESH_INTERVAL
 from services.data_service import get_data
 from services.telegram_service import (
     send_signal_alert, send_win_alert, send_loss_alert,
-    send_timeout_alert, clear_trade_alerts, get_alert_tracker
+    send_timeout_alert, get_alert_tracker
 )
-
 from core.trend import get_trend
 from core.strategy import check_signal
 from core.levels import get_levels
-
 from ui.dashboard import header, controls, trade_history
 from ui.components import market_panel, signal_panel
 
@@ -28,14 +24,12 @@ logger = get_logger(__name__)
 
 st.set_page_config(page_title="Trading Bot", page_icon="🤖", layout="wide")
 
-# ===== AUTO REFRESH (ONLY WHEN RUNNING) =====
 if "running" not in st.session_state:
     st.session_state.running = False
 
 if st.session_state.running:
     st_autorefresh(interval=REFRESH_INTERVAL * 1000, key="refresh")
 
-# ===== SESSION STATE =====
 if "trades" not in st.session_state:
     st.session_state.trades = load_trades()
 
@@ -48,10 +42,8 @@ if "alerted_trades" not in st.session_state:
 if "timeframe" not in st.session_state:
     st.session_state.timeframe = TIMEFRAME
 
-# ===== UI =====
 header()
 
-# ===== TIMEFRAME SELECTOR =====
 st.markdown("### ⏱️ Select Timeframe")
 timeframe_options = ["1m", "5m", "15m", "1h", "1d"]
 selected_timeframe = st.selectbox(
@@ -86,12 +78,10 @@ if stop:
     logger.info("Bot stopped")
 
 try:
-    # ===== LOAD DATA =====
     df = get_data(SYMBOL, st.session_state.timeframe)
 
     if df is None:
         st.warning("⚠️ No data available")
-        logger.warning("Could not fetch data")
         st.stop()
 
     try:
@@ -100,7 +90,6 @@ try:
         support, resistance = get_levels(df)
         signal = check_signal(df, trend)
 
-        # ===== UI RENDER =====
         left, right = st.columns([2, 1])
 
         with left:
@@ -109,7 +98,6 @@ try:
         with right:
             signal_panel(signal)
 
-        # ===== RISK/REWARD ANALYSIS =====
         if signal:
             st.divider()
             analysis = analyze_signal(signal)
@@ -121,76 +109,57 @@ try:
                 cols[1].metric("Reward Points", f"{analysis.get_reward():.2f}")
                 cols[2].metric("R/R Ratio", f"1:{analysis.get_risk_reward_ratio():.2f}")
 
-        # ===== SIGNAL HANDLING - CRITICAL FIX =====
         if signal:
             signal_id = f"{signal['type']}_{signal['entry']}"
             
             if signal_id != st.session_state.last_signal:
-                # CRITICAL PREVENTION: Check if active PENDING trade already exists
-                if has_active_trade(st.session_state.trades):
-                    logger.warning(f"Signal {signal_id} rejected: Active trade already exists")
-                else:
-                    # Only create new trade if no active trades
+                if not has_active_trade(st.session_state.trades):
                     trade = create_trade(signal)
-
-                    if send_signal_alert(signal, trade['id']):
-                        logger.info(f"Signal alert sent: {trade['id']}")
-
+                    
+                    send_signal_alert(signal, trade['id'])
+                    
                     if save_trade(trade):
                         st.session_state.trades.append(trade)
-                        logger.info(f"Trade recorded: {trade['id']} - {trade['type']} @ {trade['entry']}")
+                        logger.info(f"Trade: {trade['id']} - {trade['type']} @ {trade['entry']}")
 
                 st.session_state.last_signal = signal_id
         
-        # ===== CHECK PENDING TRADES - EVERY REFRESH =====
         st.session_state.trades, close_stats = update_trades_with_price(
             st.session_state.trades,
             price
         )
 
-        # ===== SEND ALERTS FOR CLOSED TRADES =====
         if close_stats['closed_count'] > 0:
-            tracker = get_alert_tracker()
-            
             for trade in st.session_state.trades:
                 trade_id = trade.get('id')
 
                 if not trade_id or trade_id in st.session_state.alerted_trades:
                     continue
 
-                # Track closed trades with status change
                 trade_status = trade.get('status')
 
                 if trade_status == STATUS_WIN:
                     if send_win_alert(trade):
                         st.session_state.alerted_trades.add(trade_id)
-                        logger.info(f"Win alert sent: {trade_id}")
+                        logger.info(f"WIN: {trade_id}")
                     update_trade_in_csv(trade)
 
                 elif trade_status == STATUS_LOSS:
                     if send_loss_alert(trade):
                         st.session_state.alerted_trades.add(trade_id)
-                        logger.info(f"Loss alert sent: {trade_id}")
+                        logger.info(f"LOSS: {trade_id}")
                     update_trade_in_csv(trade)
 
                 elif trade_status == STATUS_TIMEOUT:
                     if send_timeout_alert(trade):
                         st.session_state.alerted_trades.add(trade_id)
-                        logger.info(f"Timeout alert sent: {trade_id}")
+                        logger.info(f"TIMEOUT: {trade_id}")
                     update_trade_in_csv(trade)
 
-            logger.info(
-                f"Closed: {close_stats['closed_count']}, "
-                f"Wins: {close_stats['win_count']}, "
-                f"Losses: {close_stats['loss_count']}, "
-                f"Timeout: {close_stats['timeout_count']}"
-            )
-
     except Exception as e:
-        st.error(f"❌ Error processing data: {str(e)}")
-        logger.error(f"Error in trading logic: {str(e)}", exc_info=True)
+        st.error(f"❌ Error: {str(e)}")
+        logger.error(f"Error: {str(e)}", exc_info=True)
 
-    # ===== DASHBOARD METRICS =====
     if st.session_state.trades:
         stats = get_trade_stats(st.session_state.trades)
         performance = analyze_trade_performance(st.session_state.trades)
@@ -210,15 +179,13 @@ try:
         col6.metric("Avg Loss", f"{performance['avg_loss']:.2f} pts")
         col7.metric("R/R Ratio", f"{performance['risk_reward_ratio']:.2f}")
 
-    # ===== TRADE HISTORY =====
     trade_history(st.session_state.trades)
 
-    # ===== STATUS =====
     if st.session_state.running:
-        st.success(f"🟢 Bot Running (updates every {REFRESH_INTERVAL}s, timeframe: {st.session_state.timeframe})")
+        st.success(f"🟢 Running ({REFRESH_INTERVAL}s, {st.session_state.timeframe})")
     else:
-        st.info(f"🔴 Bot Stopped (ready on {SYMBOL} {st.session_state.timeframe})")
+        st.info(f"🔴 Stopped ({SYMBOL} {st.session_state.timeframe})")
         
 except Exception as e:
-    st.error(f"❌ Critical error: {str(e)}")
-    logger.error(f"Critical error in main app: {str(e)}", exc_info=True)
+    st.error(f"❌ Critical: {str(e)}")
+    logger.error(f"Critical: {str(e)}", exc_info=True)
