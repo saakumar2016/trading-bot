@@ -30,7 +30,7 @@ if HAS_STREAMLIT and hasattr(st, 'secrets'):
         # Dhan API Configuration
         DHAN_CLIENT_ID = st.secrets.get("dhan_client_id", os.getenv("DHAN_CLIENT_ID", ""))
         DHAN_ACCESS_TOKEN = st.secrets.get("dhan_access_token", os.getenv("DHAN_ACCESS_TOKEN", ""))
-        DATA_SOURCE = st.secrets.get("data_source", os.getenv("DATA_SOURCE", "YFINANCE"))
+        DATA_SOURCE = st.secrets.get("data_source", os.getenv("DATA_SOURCE", "DHAN"))
     except Exception as e:
         # Fall back to .env if secrets fail
         SYMBOL = os.getenv("SYMBOL", "^NSEI")
@@ -41,7 +41,7 @@ if HAS_STREAMLIT and hasattr(st, 'secrets'):
         CHAT_ID = os.getenv("CHAT_ID", "")
         DHAN_CLIENT_ID = os.getenv("DHAN_CLIENT_ID", "")
         DHAN_ACCESS_TOKEN = os.getenv("DHAN_ACCESS_TOKEN", "")
-        DATA_SOURCE = os.getenv("DATA_SOURCE", "YFINANCE")
+        DATA_SOURCE = os.getenv("DATA_SOURCE", "DHAN")
 else:
     # Local development or non-Streamlit environment
     SYMBOL = os.getenv("SYMBOL", "^NSEI")
@@ -52,7 +52,7 @@ else:
     CHAT_ID = os.getenv("CHAT_ID", "")
     DHAN_CLIENT_ID = os.getenv("DHAN_CLIENT_ID", "")
     DHAN_ACCESS_TOKEN = os.getenv("DHAN_ACCESS_TOKEN", "")
-    DATA_SOURCE = os.getenv("DATA_SOURCE", "YFINANCE")
+    DATA_SOURCE = os.getenv("DATA_SOURCE", "DHAN")
 
 # === Validation ===
 if not TELEGRAM_TOKEN or TELEGRAM_TOKEN == "":
