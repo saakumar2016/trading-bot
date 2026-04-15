@@ -31,6 +31,74 @@ else:
         logger.error("Dhan configured as DATA_SOURCE but credentials not provided. Dhan-only data service unavailable.")
 
 
+SYMBOL_MAPPING = {
+    "^NSEI": "50",
+    "^BANKNIFTY": "25"
+}
+
+
+def _map_symbol(symbol: str) -> str:
+    mapped = SYMBOL_MAPPING.get(symbol, symbol)
+    if mapped != symbol:
+        logger.debug(f"Mapped symbol '{symbol}' to Dhan symbol '{mapped}'")
+    return mapped
+
+
+def _normalize_dataframe(df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    if df is None:
+        return None
+
+    # Normalize columns to expected Dhan output
+    df = df.copy()
+    column_map = {
+        "open": "Open",
+        "high": "High",
+        "low": "Low",
+        "close": "Close"
+    }
+
+    lower_cols = {col.lower(): col for col in df.columns}
+    normalized = {}
+    for lower_name, expected_name in column_map.items():
+        if lower_name in lower_cols:
+            original = lower_cols[lower_name]
+            normalized[original] = expected_name
+
+    if not normalized:
+        logger.error("Dhan data has no OHLC columns to normalize")
+        return None
+
+    df = df.rename(columns=normalized)
+
+    required_columns = list(column_map.values())
+    missing = [col for col in required_columns if col not in df.columns]
+    if missing:
+        logger.error(f"Dhan data missing required columns after normalization: {missing}")
+        return None
+
+    df = df[required_columns].copy()
+    df = df.apply(pd.to_numeric, errors="coerce")
+    df = df.dropna()
+
+    return df
+
+
+def _validate_dataframe(df: pd.DataFrame) -> bool:
+    if df is None:
+        logger.error("Dhan OHLC data is None")
+        return False
+
+    if df.empty:
+        logger.error("Dhan OHLC data is empty")
+        return False
+
+    if len(df) < 80:
+        logger.error(f"Dhan OHLC data has too few candles: {len(df)} < 80")
+        return False
+
+    return True
+
+
 def get_data(symbol: str, timeframe: str = None) -> Optional[pd.DataFrame]:
     """
     Fetch OHLC data from Dhan API only.
@@ -58,15 +126,25 @@ def get_data(symbol: str, timeframe: str = None) -> Optional[pd.DataFrame]:
         logger.error("Dhan API not initialized; cannot fetch OHLC data")
         return None
 
-    logger.debug(f"Fetching OHLC data from Dhan for {symbol} at {timeframe}")
-    df = get_dhan_ohlc(symbol, timeframe)
+    mapped_symbol = _map_symbol(symbol)
+    logger.debug(f"Fetching OHLC data from Dhan for {mapped_symbol} at {timeframe}")
+    df = get_dhan_ohlc(mapped_symbol, timeframe)
 
-    if df is not None and not df.empty:
-        logger.info(f"Successfully fetched OHLC from Dhan for {symbol} at {timeframe}")
-        return df
+    if df is None:
+        logger.error(f"Dhan returned no data for {mapped_symbol} at {timeframe}")
+        return None
 
-    logger.error(f"Failed to fetch OHLC from Dhan for {symbol} at {timeframe}")
-    return None
+    df = _normalize_dataframe(df)
+    if df is None:
+        logger.error(f"Failed to normalize Dhan data for {mapped_symbol} at {timeframe}")
+        return None
+
+    if not _validate_dataframe(df):
+        logger.error(f"Invalid Dhan data for {mapped_symbol} at {timeframe}")
+        return None
+
+    logger.info(f"Successfully fetched and validated Dhan OHLC data for {mapped_symbol} at {timeframe} ({len(df)} candles)")
+    return df
 
 
 def get_live_price(symbol: str, source: str = None) -> Optional[float]:
