@@ -6,6 +6,7 @@ import pandas as pd
 from services.data_service import get_data
 from utils.backtest import run_backtest, get_backtest_text_summary
 from utils.logger import get_logger
+from utils.performance import analyze_trade_performance
 
 logger = get_logger(__name__)
 
@@ -58,6 +59,13 @@ if run_test:
             st.subheader("📊 Metrics")
             metrics_df = pd.DataFrame([result.to_dict()])
             st.dataframe(metrics_df, use_container_width=True)
+
+            performance = analyze_trade_performance(result.trades)
+            st.markdown("""
+            **Performance Analytics**
+            """)
+            perf_df = pd.DataFrame([performance])
+            st.dataframe(perf_df, use_container_width=True)
         
         # === Trades Table ===
         if result.trades:

@@ -7,6 +7,7 @@ from utils.trade_storage import (
     get_trade_stats, STATUS_PENDING
 )
 from utils.analysis import analyze_signal, get_analysis_text
+from utils.performance import analyze_trade_performance
 
 from config import SYMBOL, TIMEFRAME, REFRESH_INTERVAL
 from services.data_service import get_data
@@ -180,6 +181,7 @@ try:
     # Display trade statistics
     if st.session_state.trades:
         stats = get_trade_stats(st.session_state.trades)
+        performance = analyze_trade_performance(st.session_state.trades)
         
         st.divider()
         st.subheader("📊 Trade Statistics")
@@ -191,8 +193,13 @@ try:
         col4.metric("Lost", stats['lost'])
         col5.metric("Win Rate", f"{stats['win_rate']:.1f}%")
         
-        st.metric("Total P&L", f"{stats['total_pnl']:.2f} pts", 
-                 delta="Profit" if stats['total_pnl'] > 0 else "Loss")
+        st.metric("Total P&L", f"{performance['total_pnl']:.2f} pts", 
+                 delta="Profit" if performance['total_pnl'] > 0 else "Loss")
+
+        col6, col7, col8 = st.columns(3)
+        col6.metric("Avg Win", f"{performance['avg_win']:.2f} pts")
+        col7.metric("Avg Loss", f"{performance['avg_loss']:.2f} pts")
+        col8.metric("R/R Ratio", f"{performance['risk_reward_ratio']:.2f}")
     
     trade_history(st.session_state.trades)
 
