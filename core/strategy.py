@@ -12,7 +12,7 @@ MIN_CANDLES = 80
 SUPPORT_BUFFER = 8
 RESISTANCE_BUFFER = 8
 WICK_RATIO = 0.4
-SL_BUFFER = 10
+SL_BUFFER = 5
 
 NEAR_LEVEL_RANGE = 12   # NEW
 MIN_RANGE_FILTER = 50   # NEW
@@ -49,8 +49,10 @@ def check_signal(df: pd.DataFrame, trend: str) -> Optional[Dict]:
         support, resistance = get_levels(df)
         range_size = resistance - support
 
-        # 🚫 Avoid bad market
-        if range_size < MIN_RANGE_FILTER:
+        # 🚫 Avoid bad market - allow if strong wick
+        is_strong_wick = (lower_wick > body * 1.5) or (upper_wick > body * 1.5)
+        
+        if range_size < MIN_RANGE_FILTER and not is_strong_wick:
             logger.warning(f"Signal check aborted: range too narrow ({range_size} < {MIN_RANGE_FILTER})")
             return None
 

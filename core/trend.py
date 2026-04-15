@@ -6,7 +6,7 @@ logger = get_logger(__name__)
 
 # Configuration
 MIN_DATA_POINTS = 20
-LOOKBACK_CANDLES = 16
+LOOKBACK_CANDLES = 8
 THRESHOLD = 10
 
 def get_trend(df: pd.DataFrame) -> str:
