@@ -19,7 +19,12 @@ MIN_RANGE_FILTER = 50   # NEW
 
 def check_signal(df: pd.DataFrame, trend: str) -> Optional[Dict]:
     try:
-        if df is None or len(df) < MIN_CANDLES:
+        if df is None:
+            logger.warning("Signal check aborted: data frame is None")
+            return None
+
+        if len(df) < MIN_CANDLES:
+            logger.warning(f"Signal check aborted: insufficient candles ({len(df)} < {MIN_CANDLES})")
             return None
 
         signal_candle = df.iloc[-3]
@@ -46,6 +51,7 @@ def check_signal(df: pd.DataFrame, trend: str) -> Optional[Dict]:
 
         # 🚫 Avoid bad market
         if range_size < MIN_RANGE_FILTER:
+            logger.warning(f"Signal check aborted: range too narrow ({range_size} < {MIN_RANGE_FILTER})")
             return None
 
         price = cl2
