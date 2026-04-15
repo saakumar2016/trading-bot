@@ -130,3 +130,8 @@ def analyze_trade_performance(trades: List[Dict]) -> Dict:
         "risk_reward_ratio": risk_reward_ratio
     }
 
+
+def calculate_metrics(trades: List[Dict]) -> Dict:
+    """Calculate performance metrics for closed trades."""
+    return analyze_trade_performance(trades)
+
