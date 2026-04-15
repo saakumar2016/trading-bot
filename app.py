@@ -4,14 +4,18 @@ from utils.logger import get_logger
 from utils.trade_storage import (
     save_trade, load_trades, create_trade, 
     update_trades_with_price, update_trade_in_csv,
-    get_trade_stats, STATUS_PENDING
+    get_trade_stats, STATUS_PENDING, has_active_trade,
+    STATUS_WIN, STATUS_LOSS, STATUS_TIMEOUT
 )
 from utils.analysis import analyze_signal, get_analysis_text
 from utils.analysis import analyze_trade_performance
 
 from config import SYMBOL, TIMEFRAME, REFRESH_INTERVAL
 from services.data_service import get_data
-from services.telegram_service import send_signal_alert, send_win_alert, send_loss_alert
+from services.telegram_service import (
+    send_signal_alert, send_win_alert, send_loss_alert,
+    send_timeout_alert, clear_trade_alerts, get_alert_tracker
+)
 
 from core.trend import get_trend
 from core.strategy import check_signal
@@ -31,7 +35,7 @@ if "running" not in st.session_state:
 if st.session_state.running:
     st_autorefresh(interval=REFRESH_INTERVAL * 1000, key="refresh")
 
-# ===== SESSION =====
+# ===== SESSION STATE =====
 if "trades" not in st.session_state:
     st.session_state.trades = load_trades()
 
@@ -39,10 +43,10 @@ if "last_signal" not in st.session_state:
     st.session_state.last_signal = None
 
 if "alerted_trades" not in st.session_state:
-    st.session_state.alerted_trades = set()  # Track trades with sent alerts (by ID)
+    st.session_state.alerted_trades = set()
 
 if "timeframe" not in st.session_state:
-    st.session_state.timeframe = TIMEFRAME  # Initialize from config
+    st.session_state.timeframe = TIMEFRAME
 
 # ===== UI =====
 header()
@@ -57,14 +61,12 @@ selected_timeframe = st.selectbox(
     key="timeframe_select"
 )
 
-# Update session state if timeframe changed
 if selected_timeframe != st.session_state.timeframe:
     st.session_state.timeframe = selected_timeframe
-    st.rerun()  # Immediately refresh with new timeframe
+    st.rerun()
 
 st.divider()
 
-# Display current configuration
 col1, col2, col3, col4 = st.columns(4)
 col1.metric("Symbol", SYMBOL)
 col2.metric("Timeframe", st.session_state.timeframe)
@@ -84,8 +86,7 @@ if stop:
     logger.info("Bot stopped")
 
 try:
-    # ===== LOAD DATA ONCE PER RUN =====
-    # Use session state timeframe (user selected) instead of config
+    # ===== LOAD DATA =====
     df = get_data(SYMBOL, st.session_state.timeframe)
 
     if df is None:
@@ -115,63 +116,75 @@ try:
             if analysis:
                 st.text(get_analysis_text(signal))
                 
-                # Risk/Reward metrics
                 cols = st.columns(3)
                 cols[0].metric("Risk Points", f"{analysis.get_risk():.2f}")
                 cols[1].metric("Reward Points", f"{analysis.get_reward():.2f}")
                 cols[2].metric("R/R Ratio", f"1:{analysis.get_risk_reward_ratio():.2f}")
 
-        # ===== SIGNAL HANDLING =====
+        # ===== SIGNAL HANDLING - CRITICAL FIX =====
         if signal:
             signal_id = f"{signal['type']}_{signal['entry']}"
-
+            
             if signal_id != st.session_state.last_signal:
-                # Create full trade object with lifecycle tracking
-                trade = create_trade(signal)
+                # CRITICAL PREVENTION: Check if active PENDING trade already exists
+                if has_active_trade(st.session_state.trades):
+                    logger.warning(f"Signal {signal_id} rejected: Active trade already exists")
+                else:
+                    # Only create new trade if no active trades
+                    trade = create_trade(signal)
 
-                # Send structured signal alert with trade id tracking
-                if send_signal_alert(trade):
-                    logger.info(f"Signal alert sent: {trade['id']}")
+                    if send_signal_alert(signal, trade['id']):
+                        logger.info(f"Signal alert sent: {trade['id']}")
 
-                # Save trade to file and memory
-                if save_trade(trade):
-                    st.session_state.trades.append(trade)
-                    logger.info(f"Trade recorded: {trade['id']} - {trade['type']} @ {trade['entry']}")
+                    if save_trade(trade):
+                        st.session_state.trades.append(trade)
+                        logger.info(f"Trade recorded: {trade['id']} - {trade['type']} @ {trade['entry']}")
 
                 st.session_state.last_signal = signal_id
         
-        # ===== CHECK PENDING TRADES =====
-        # Update all pending trades with current price on every refresh
+        # ===== CHECK PENDING TRADES - EVERY REFRESH =====
         st.session_state.trades, close_stats = update_trades_with_price(
             st.session_state.trades,
             price
         )
 
-        # If any trades closed, update CSV and send alerts
+        # ===== SEND ALERTS FOR CLOSED TRADES =====
         if close_stats['closed_count'] > 0:
+            tracker = get_alert_tracker()
+            
             for trade in st.session_state.trades:
                 trade_id = trade.get('id')
 
-                # Skip if already alerted
-                if trade_id in st.session_state.alerted_trades:
+                if not trade_id or trade_id in st.session_state.alerted_trades:
                     continue
 
-                # If trade is closed (WIN/LOSS), send individual alert
-                if trade.get('status') != STATUS_PENDING and trade_id:
-                    # Update CSV
+                # Track closed trades with status change
+                trade_status = trade.get('status')
+
+                if trade_status == STATUS_WIN:
+                    if send_win_alert(trade):
+                        st.session_state.alerted_trades.add(trade_id)
+                        logger.info(f"Win alert sent: {trade_id}")
                     update_trade_in_csv(trade)
 
-                    # Send structured alert based on status
-                    if trade.get('status') == "WIN":
-                        if send_win_alert(trade):
-                            st.session_state.alerted_trades.add(trade_id)
-                            logger.info(f"Win alert sent: {trade_id}")
-                    elif trade.get('status') == "LOSS":
-                        if send_loss_alert(trade):
-                            st.session_state.alerted_trades.add(trade_id)
-                            logger.info(f"Loss alert sent: {trade_id}")
+                elif trade_status == STATUS_LOSS:
+                    if send_loss_alert(trade):
+                        st.session_state.alerted_trades.add(trade_id)
+                        logger.info(f"Loss alert sent: {trade_id}")
+                    update_trade_in_csv(trade)
 
-            logger.info(f"Closed: {close_stats['closed_count']}, Wins: {close_stats['win_count']}, Losses: {close_stats['loss_count']}")
+                elif trade_status == STATUS_TIMEOUT:
+                    if send_timeout_alert(trade):
+                        st.session_state.alerted_trades.add(trade_id)
+                        logger.info(f"Timeout alert sent: {trade_id}")
+                    update_trade_in_csv(trade)
+
+            logger.info(
+                f"Closed: {close_stats['closed_count']}, "
+                f"Wins: {close_stats['win_count']}, "
+                f"Losses: {close_stats['loss_count']}, "
+                f"Timeout: {close_stats['timeout_count']}"
+            )
 
     except Exception as e:
         st.error(f"❌ Error processing data: {str(e)}")
@@ -185,7 +198,6 @@ try:
         st.divider()
         st.subheader("📊 Trading Dashboard")
 
-        # Main metrics row
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Total Trades", stats['total'])
         col2.metric("Win Rate %", f"{stats['win_rate']:.1f}")
@@ -193,7 +205,6 @@ try:
                    delta="Profit" if performance['total_pnl'] > 0 else "Loss")
         col4.metric("Active Trades", stats['pending'])
 
-        # Additional performance metrics
         col5, col6, col7 = st.columns(3)
         col5.metric("Avg Win", f"{performance['avg_win']:.2f} pts")
         col6.metric("Avg Loss", f"{performance['avg_loss']:.2f} pts")
@@ -211,405 +222,3 @@ try:
 except Exception as e:
     st.error(f"❌ Critical error: {str(e)}")
     logger.error(f"Critical error in main app: {str(e)}", exc_info=True)
-
-# //////////////////////////////////////
-# //////////////////////////////////////
-# //////////////////////////////////////
-
-# import streamlit as st
-# import yfinance as yf
-# import time
-# import requests
-# from datetime import datetime
-
-# # ===== CONFIG =====
-# SYMBOL = "^NSEI"
-# TELEGRAM_TOKEN = "YOUR_TOKEN"
-# CHAT_ID = "5647013625"
-
-# # ===== TELEGRAM =====
-# def send_telegram(msg):
-#     try:
-#         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-#         requests.post(url, data={"chat_id": CHAT_ID, "text": msg}, timeout=5)
-#     except:
-#         pass
-
-# # ===== SAFE VALUE =====
-# def val(x):
-#     try:
-#         return float(x)
-#     except:
-#         return x.item()
-
-# # ===== GET DATA =====
-# def get_data():
-#     df = yf.download(SYMBOL, period="2d", interval="1m", progress=False, auto_adjust=True)
-
-#     if df is None or df.empty:
-#         return None
-
-#     df = df.dropna()
-
-#     # Fix multi-index columns
-#     if hasattr(df.columns, "levels"):
-#         df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
-
-#     return df
-
-# # ===== TREND =====
-# def get_trend(df):
-#     if len(df) < 20:
-#         return "SIDEWAYS"
-
-#     curr = val(df['Close'].iloc[-1])
-#     prev = val(df['Close'].iloc[-16])
-
-#     diff = curr - prev
-
-#     if abs(diff) < 10:
-#         return "SIDEWAYS"
-#     return "UP" if diff > 0 else "DOWN"
-
-# # ===== LEVELS =====
-# def get_levels(df):
-#     recent = df.tail(80)
-
-#     support = round(recent.nsmallest(5, 'Low')['Low'].mean(), 2)
-#     resistance = round(recent.nlargest(5, 'High')['High'].mean(), 2)
-
-#     return support, resistance
-
-# # ===== SIGNAL LOGIC =====
-# def check_signal(df, trend):
-#     if len(df) < 5:
-#         return None
-
-#     signal_candle = df.iloc[-3]
-#     confirm_candle = df.iloc[-2]
-
-#     o1, h1, l1, c1 = val(signal_candle['Open']), val(signal_candle['High']), val(signal_candle['Low']), val(signal_candle['Close'])
-#     o2, c2 = val(confirm_candle['Open']), val(confirm_candle['Close'])
-
-#     body = abs(c1 - o1)
-#     upper_wick = h1 - max(o1, c1)
-#     lower_wick = min(o1, c1) - l1
-
-#     support, resistance = get_levels(df)
-
-#     # ===== VOLATILITY FILTER =====
-#     recent_range = df.tail(20)['High'].max() - df.tail(20)['Low'].min()
-#     if recent_range < 30:
-#         return None
-
-#     range_size = resistance - support
-
-#     # ===== BUY =====
-#     if trend in ["UP", "SIDEWAYS"]:
-#         if l1 < support - 5 and c1 > support and lower_wick > body * 0.8 and c2 > o2:
-#             entry = round(c2, 2)
-#             return {
-#                 "type": "BUY",
-#                 "entry": entry,
-#                 "sl": round(l1 - 10, 2),
-#                 "target": round(entry + (range_size * 0.6), 2),
-#                 "support": support,
-#                 "resistance": resistance
-#             }
-
-#     # ===== SELL =====
-#     if trend in ["DOWN", "SIDEWAYS"]:
-#         if h1 > resistance + 5 and c1 < resistance and upper_wick > body * 0.8 and c2 < o2:
-#             entry = round(c2, 2)
-#             return {
-#                 "type": "SELL",
-#                 "entry": entry,
-#                 "sl": round(h1 + 10, 2),
-#                 "target": round(entry - (range_size * 0.6), 2),
-#                 "support": support,
-#                 "resistance": resistance
-#             }
-
-#     return None
-
-# # ===== STREAMLIT UI =====
-# st.title("📊 NIFTY Smart Bot")
-
-# if "running" not in st.session_state:
-#     st.session_state.running = False
-
-# if st.button("▶️ Start Bot"):
-#     st.session_state.running = True
-
-# if st.button("⛔ Stop Bot"):
-#     st.session_state.running = False
-
-# placeholder = st.empty()
-
-# last_signal = None
-
-# # ===== MAIN LOOP =====
-# if st.session_state.running:
-#     for _ in range(1000):
-
-#         df = get_data()
-
-#         if df is None:
-#             st.warning("No data...")
-#             time.sleep(5)
-#             continue
-
-#         trend = get_trend(df)
-#         price = round(val(df['Close'].iloc[-1]), 2)
-#         support, resistance = get_levels(df)
-
-#         signal = check_signal(df, trend)
-
-#         with placeholder.container():
-#             st.markdown("### 📊 Market Status")
-#             st.write(f"Price: {price}")
-#             st.write(f"Trend: {trend}")
-#             st.write(f"Support: {support}")
-#             st.write(f"Resistance: {resistance}")
-
-#         if signal:
-#             signal_id = f"{signal['type']}_{signal['entry']}"
-
-#             if signal_id != last_signal:
-#                 msg = f"""
-# 🚨 TRADE SIGNAL
-
-# Type: {signal['type']}
-# Entry: {signal['entry']}
-# SL: {signal['sl']}
-# Target: {signal['target']}
-# Trend: {trend}
-# """
-
-#                 st.success(msg)
-#                 send_telegram(msg)
-
-#                 last_signal = signal_id
-
-#         time.sleep(10)
-
-
-
-# ////////////////////////
-# ///////////////////////
-# ////////////////////////
-
-# import yfinance as yf
-# import time
-# import requests
-# import csv
-# import os
-# from datetime import datetime
-
-# # ===== CONFIG =====
-# SYMBOL = "^NSEI"
-# TELEGRAM_TOKEN = "YOUR_TOKEN"
-# CHAT_ID = "5647013625"
-# LOG_FILE = "trades_log.csv"
-
-# open_trades = []
-# last_signal = None
-
-# # ===== TELEGRAM =====
-# def send_telegram(msg):
-#     try:
-#         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-#         requests.post(url, data={"chat_id": CHAT_ID, "text": msg}, timeout=10)
-#     except:
-#         print("Telegram error")
-
-# # ===== SAFE VALUE =====
-# def val(x):
-#     return x.item() if hasattr(x, "item") else float(x)
-
-# # ===== DATA =====
-# def get_data():
-#     df = yf.download(SYMBOL, period="2d", interval="1m", progress=False, auto_adjust=True)
-#     if df is None or df.empty:
-#         return None
-
-#     df = df.dropna()
-
-#     if hasattr(df.columns, "levels"):
-#         df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
-
-#     return df
-
-# # ===== TREND =====
-# def get_trend(df):
-#     if len(df) < 20:
-#         return "SIDEWAYS"
-
-#     curr = val(df['Close'].iloc[-1])
-#     prev = val(df['Close'].iloc[-16])
-
-#     diff = curr - prev
-
-#     if abs(diff) < 10:
-#         return "SIDEWAYS"
-#     return "UP" if diff > 0 else "DOWN"
-
-# # ===== LEVELS =====
-# def get_levels(df):
-#     recent = df.tail(80)
-#     support = round(recent.nsmallest(5, 'Low')['Low'].mean(), 2)
-#     resistance = round(recent.nlargest(5, 'High')['High'].mean(), 2)
-#     return support, resistance
-
-# # ===== TRAILING SL =====
-# def update_trailing_sl(trade, price):
-#     if trade["type"].startswith("BUY"):
-#         if price > trade["entry"] + 30:
-#             trade["sl"] = max(trade["sl"], trade["entry"])
-
-#     if trade["type"].startswith("SELL"):
-#         if price < trade["entry"] - 30:
-#             trade["sl"] = min(trade["sl"], trade["entry"])
-
-# # ===== RESULT CHECK =====
-# def update_results(price):
-#     global open_trades
-#     remaining = []
-
-#     for trade in open_trades:
-#         update_trailing_sl(trade, price)
-
-#         result = None
-
-#         if trade["type"].startswith("BUY"):
-#             if price >= trade["target"]:
-#                 result = "TARGET HIT"
-#             elif price <= trade["sl"]:
-#                 result = "SL HIT"
-
-#         if trade["type"].startswith("SELL"):
-#             if price <= trade["target"]:
-#                 result = "TARGET HIT"
-#             elif price >= trade["sl"]:
-#                 result = "SL HIT"
-
-#         if result:
-#             send_telegram(f"✅ {result} | {trade['type']} @ {price}")
-
-#             with open(LOG_FILE, 'a', newline='') as f:
-#                 writer = csv.writer(f)
-#                 writer.writerow([datetime.now(), trade["type"], trade["entry"], trade["sl"], trade["target"], result])
-#         else:
-#             remaining.append(trade)
-
-#     open_trades = remaining
-
-# # ===== SIGNAL =====
-# def check_signal(df, trend):
-#     signal_candle = df.iloc[-3]
-#     confirm_candle = df.iloc[-2]
-
-#     o1, h1, l1, c1 = val(signal_candle['Open']), val(signal_candle['High']), val(signal_candle['Low']), val(signal_candle['Close'])
-#     o2, c2 = val(confirm_candle['Open']), val(confirm_candle['Close'])
-
-#     body = abs(c1 - o1)
-#     upper_wick = h1 - max(o1, c1)
-#     lower_wick = min(o1, c1) - l1
-
-#     support, resistance = get_levels(df)
-
-#     # ===== VOLATILITY FILTER =====
-#     recent_range = df.tail(20)['High'].max() - df.tail(20)['Low'].min()
-#     if recent_range < 30:
-#         return None
-
-#     range_size = resistance - support
-
-#     # ===== BUY =====
-#     if trend in ["UP", "SIDEWAYS"]:
-#         if l1 < support - 5 and c1 > support and lower_wick > body * 0.8 and c2 > o2:
-#             entry = round(c2, 2)
-#             return {
-#                 "type": "BUY CONFIRMED",
-#                 "entry": entry,
-#                 "sl": round(l1 - 10, 2),
-#                 "target": round(entry + (range_size * 0.6), 2),
-#                 "support": support,
-#                 "resistance": resistance
-#             }
-
-#     # ===== SELL =====
-#     if trend in ["DOWN", "SIDEWAYS"]:
-#         if h1 > resistance + 5 and c1 < resistance and upper_wick > body * 0.8 and c2 < o2:
-#             entry = round(c2, 2)
-#             return {
-#                 "type": "SELL CONFIRMED",
-#                 "entry": entry,
-#                 "sl": round(h1 + 10, 2),
-#                 "target": round(entry - (range_size * 0.6), 2),
-#                 "support": support,
-#                 "resistance": resistance
-#             }
-
-#     return None
-
-# # ===== START =====
-# print("🚀 PRO BOT RUNNING...\n")
-# send_telegram("🚀 PRO BOT STARTED")
-
-# # ===== LOOP =====
-# while True:
-#     try:
-#         df = get_data()
-
-#         if df is None:
-#             print("No data...")
-#             time.sleep(30)
-#             continue
-
-#         trend = get_trend(df)
-#         price = round(val(df['Close'].iloc[-1]), 2)
-
-#         support, resistance = get_levels(df)
-
-#         update_results(price)
-
-#         signal = check_signal(df, trend)
-
-#         print(f"""
-# 📊 MARKET
-# Price: {price}
-# Trend: {trend}
-# Support: {support}
-# Resistance: {resistance}
-# """)
-
-#         if signal:
-#             signal_id = f"{signal['type']}_{signal['entry']}"
-
-#             if signal_id != last_signal:
-#                 msg = f"""
-# 🚨 TRADE
-
-# {signal['type']}
-# Entry: {signal['entry']}
-# SL: {signal['sl']}
-# Target: {signal['target']}
-# Trend: {trend}
-# """
-#                 print(msg)
-#                 send_telegram(msg)
-
-#                 open_trades.append(signal)
-
-#                 with open(LOG_FILE, 'a', newline='') as f:
-#                     writer = csv.writer(f)
-#                     writer.writerow([datetime.now(), signal["type"], signal["entry"], signal["sl"], signal["target"], "OPEN"])
-
-#                 last_signal = signal_id
-
-#         time.sleep(60)
-
-#     except Exception as e:
-#         print("Error:", e)
-#         time.sleep(30)

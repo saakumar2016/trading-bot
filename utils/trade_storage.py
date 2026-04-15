@@ -1,21 +1,20 @@
 import csv
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Tuple
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 TRADES_FILE = os.path.expanduser("~/.streamlit_trades/trades.csv")
-TRADES_MEMORY_FILE = os.path.expanduser("~/.streamlit_trades/trades_open.json")
+TRADES_TIMEOUT_MINUTES = 30
 
-# Trade status constants
 STATUS_PENDING = "PENDING"
 STATUS_WIN = "WIN"
 STATUS_LOSS = "LOSS"
+STATUS_TIMEOUT = "TIMEOUT"
 
-# CSV fieldnames - includes new fields for lifecycle tracking
 CSV_FIELDNAMES = [
     'id', 'timestamp', 'type', 'entry', 'sl', 'target',
     'status', 'exit_price', 'exit_time',
@@ -24,30 +23,14 @@ CSV_FIELDNAMES = [
 
 
 def ensure_data_dir() -> None:
-    """Create data directory if it doesn't exist."""
     os.makedirs(os.path.dirname(TRADES_FILE), exist_ok=True)
 
 
 def generate_trade_id() -> str:
-    """
-    Generate unique trade ID.
-    
-    Returns:
-        Unique ID combining timestamp and UUID
-    """
     return f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(uuid.uuid4())[:8]}"
 
 
 def create_trade(signal: Dict) -> Dict:
-    """
-    Create a complete trade object from a signal.
-    
-    Args:
-        signal: Signal dictionary with entry, sl, target, type, etc.
-        
-    Returns:
-        Trade dictionary with all lifecycle fields
-    """
     trade = {
         'id': generate_trade_id(),
         'timestamp': datetime.now().isoformat(),
@@ -68,15 +51,6 @@ def create_trade(signal: Dict) -> Dict:
 
 
 def calculate_pnl(trade: Dict) -> Optional[float]:
-    """
-    Calculate profit/loss for a trade.
-    
-    Args:
-        trade: Trade dictionary
-        
-    Returns:
-        P&L in points, or None if trade incomplete
-    """
     if not trade.get('exit_price'):
         return None
     
@@ -95,40 +69,46 @@ def calculate_pnl(trade: Dict) -> Optional[float]:
         return None
 
 
+def _check_trade_timeout(trade: Dict, current_price: float) -> Tuple[Dict, bool]:
+    """Check if trade exceeded timeout duration."""
+    if trade.get('status') != STATUS_PENDING:
+        return trade, False
+    
+    try:
+        timestamp_str = trade.get('timestamp', '')
+        trade_time = datetime.fromisoformat(timestamp_str)
+        now = datetime.now()
+        elapsed = now - trade_time
+        
+        if elapsed > timedelta(minutes=TRADES_TIMEOUT_MINUTES):
+            trade['status'] = STATUS_TIMEOUT
+            trade['exit_price'] = current_price
+            trade['exit_time'] = now.isoformat()
+            trade['pnl'] = calculate_pnl(trade)
+            logger.info(f"Trade {trade['id']}: TIMEOUT after {TRADES_TIMEOUT_MINUTES}m at {current_price}")
+            return trade, True
+    except Exception as e:
+        logger.error(f"Error checking timeout: {str(e)}")
+    
+    return trade, False
+
+
 def _update_trade_status(trade: Dict, current_price: float) -> Tuple[Dict, bool]:
-    """
-    Update a single trade status based on current price.
-
-    Checks if trade reached target (WIN) or stop loss (LOSS).
-
-    Args:
-        trade: Trade dictionary to update
-        current_price: Current market price
-
-    Returns:
-        Tuple of (updated_trade, status_changed)
-
-    Logic:
-        BUY:
-            - if price >= target → WIN
-            - if price <= sl → LOSS
-        SELL:
-            - if price <= target → WIN
-            - if price >= sl → LOSS
-    """
     if trade.get('status') != STATUS_PENDING:
         return trade, False
 
     trade_type = trade.get('type', '')
-    entry = float(trade.get('entry', 0))
-    sl = float(trade.get('sl', 0))
-    target = float(trade.get('target', 0))
+    
+    try:
+        sl = float(trade.get('sl', 0))
+        target = float(trade.get('target', 0))
+    except (ValueError, TypeError):
+        return trade, False
 
     status_changed = False
 
     try:
         if trade_type == 'BUY':
-            # BUY: profit if price rises to target, loss if falls to SL
             if current_price >= target:
                 trade['status'] = STATUS_WIN
                 trade['exit_price'] = target
@@ -144,7 +124,6 @@ def _update_trade_status(trade: Dict, current_price: float) -> Tuple[Dict, bool]
                 logger.info(f"Trade {trade['id']}: BUY hit SL {sl}")
 
         elif trade_type == 'SELL':
-            # SELL: profit if price falls to target, loss if rises to SL
             if current_price <= target:
                 trade['status'] = STATUS_WIN
                 trade['exit_price'] = target
@@ -159,7 +138,6 @@ def _update_trade_status(trade: Dict, current_price: float) -> Tuple[Dict, bool]
                 status_changed = True
                 logger.info(f"Trade {trade['id']}: SELL hit SL {sl}")
 
-        # Calculate P&L if status changed
         if status_changed:
             trade['pnl'] = calculate_pnl(trade)
 
@@ -170,52 +148,45 @@ def _update_trade_status(trade: Dict, current_price: float) -> Tuple[Dict, bool]
 
 
 def update_trade_status(trades: List[Dict], current_price: float) -> Tuple[List[Dict], Dict]:
-    """
-    Update all pending trades with current price in place.
-
-    Args:
-        trades: List of trade dictionaries
-        current_price: Current market price
-
-    Returns:
-        Tuple of (updated_trades, stats_dict with closed_count, win_count, loss_count, total_pnl)
-    """
     stats = {
         'closed_count': 0,
         'win_count': 0,
         'loss_count': 0,
+        'timeout_count': 0,
         'total_pnl': 0.0
     }
 
     for trade in trades:
-        updated_trade, changed = _update_trade_status(trade, current_price)
-        if changed:
-            stats['closed_count'] += 1
-            if updated_trade['status'] == STATUS_WIN:
-                stats['win_count'] += 1
-            elif updated_trade['status'] == STATUS_LOSS:
-                stats['loss_count'] += 1
-
-            if updated_trade.get('pnl') is not None:
-                stats['total_pnl'] += updated_trade['pnl']
+        if trade.get('status') == STATUS_PENDING:
+            _, timeout_hit = _check_trade_timeout(trade, current_price)
+            if timeout_hit:
+                stats['closed_count'] += 1
+                stats['timeout_count'] += 1
+                if trade.get('pnl'):
+                    stats['total_pnl'] += trade['pnl']
+            else:
+                _, changed = _update_trade_status(trade, current_price)
+                if changed:
+                    stats['closed_count'] += 1
+                    if trade['status'] == STATUS_WIN:
+                        stats['win_count'] += 1
+                    elif trade['status'] == STATUS_LOSS:
+                        stats['loss_count'] += 1
+                    if trade.get('pnl') is not None:
+                        stats['total_pnl'] += trade['pnl']
 
     return trades, stats
 
 
-# Preserve legacy helper name for code that still calls update_trades_with_price
 update_trades_with_price = update_trade_status
 
 
+def has_active_trade(trades: List[Dict]) -> bool:
+    """Check if there's any active PENDING trade."""
+    return any(trade.get('status') == STATUS_PENDING for trade in trades)
+
+
 def save_trade(trade: Dict) -> bool:
-    """
-    Save trade to CSV file.
-    
-    Args:
-        trade: Trade dictionary
-        
-    Returns:
-        True if successful
-    """
     try:
         ensure_data_dir()
         
@@ -227,7 +198,6 @@ def save_trade(trade: Dict) -> bool:
             if not file_exists:
                 writer.writeheader()
             
-            # Prepare row - only include fields in CSV_FIELDNAMES
             row = {field: trade.get(field, '') for field in CSV_FIELDNAMES}
             writer.writerow(row)
         
@@ -240,34 +210,21 @@ def save_trade(trade: Dict) -> bool:
 
 
 def update_trade_in_csv(trade: Dict) -> bool:
-    """
-    Update an existing trade in the CSV file.
-    
-    Args:
-        trade: Trade dictionary with updated status/exit info
-        
-    Returns:
-        True if successful
-    """
     try:
         if not os.path.exists(TRADES_FILE):
             return False
         
-        # Read all trades
         trades = []
         with open(TRADES_FILE, 'r') as f:
             reader = csv.DictReader(f)
             trades = list(reader)
         
-        # Update the trade
         for i, t in enumerate(trades):
             if t.get('id') == trade.get('id'):
-                # Update with new values
                 for field in CSV_FIELDNAMES:
                     t[field] = trade.get(field, t.get(field, ''))
                 break
         
-        # Write back all trades
         with open(TRADES_FILE, 'w', newline='') as f:
             writer = csv.DictWriter(f, fieldnames=CSV_FIELDNAMES)
             writer.writeheader()
@@ -284,12 +241,6 @@ def update_trade_in_csv(trade: Dict) -> bool:
 
 
 def load_trades() -> List[Dict]:
-    """
-    Load all trades from CSV file.
-    
-    Returns:
-        List of trade dictionaries
-    """
     try:
         if not os.path.exists(TRADES_FILE):
             return []
@@ -308,12 +259,6 @@ def load_trades() -> List[Dict]:
 
 
 def load_pending_trades() -> List[Dict]:
-    """
-    Load only pending trades from CSV file.
-    
-    Returns:
-        List of pending trade dictionaries
-    """
     trades = load_trades()
     pending = [t for t in trades if t.get('status') == STATUS_PENDING]
     logger.debug(f"Loaded {len(pending)} pending trades")
@@ -321,22 +266,14 @@ def load_pending_trades() -> List[Dict]:
 
 
 def get_trade_stats(trades: List[Dict]) -> Dict:
-    """
-    Calculate statistics for trades.
-    
-    Args:
-        trades: List of trade dictionaries
-        
-    Returns:
-        Dictionary with stats: total, pending, won, lost, total_pnl, win_rate
-    """
     total = len(trades)
     pending = sum(1 for t in trades if t.get('status') == STATUS_PENDING)
     won = sum(1 for t in trades if t.get('status') == STATUS_WIN)
     lost = sum(1 for t in trades if t.get('status') == STATUS_LOSS)
+    timeout = sum(1 for t in trades if t.get('status') == STATUS_TIMEOUT)
     
     total_pnl = 0.0
-    closed = won + lost
+    closed = won + lost + timeout
     
     for trade in trades:
         if trade.get('pnl'):
@@ -352,6 +289,7 @@ def get_trade_stats(trades: List[Dict]) -> Dict:
         'pending': pending,
         'won': won,
         'lost': lost,
+        'timeout': timeout,
         'closed': closed,
         'total_pnl': round(total_pnl, 2),
         'win_rate': round(win_rate, 2)

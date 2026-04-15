@@ -1,143 +1,222 @@
-import requests
+import hashlib
+import os
 from typing import Dict, Optional
-from config import TELEGRAM_TOKEN, CHAT_ID
+from datetime import datetime
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-_sent_messages = set()
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', '')
+TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
 
 
-def _add_sent_message(msg_hash: str) -> None:
-    """Track a sent message to prevent duplicates."""
-    _sent_messages.add(msg_hash)
+class AlertTracker:
+    """Track sent alerts to prevent spam."""
+    
+    def __init__(self):
+        self._sent_alerts: Dict[str, int] = {}
+    
+    def _get_alert_key(self, trade_id: str, event_type: str) -> str:
+        """Get unique key for trade + event type combination."""
+        return f"{trade_id}_{event_type}"
+    
+    def _get_hash_key(self, content: str) -> str:
+        """Get hash of content for deduplication."""
+        return hashlib.md5(content.encode()).hexdigest()
+    
+    def mark_sent(self, trade_id: str, event_type: str) -> None:
+        """Mark alert as sent for this trade and event type."""
+        key = self._get_alert_key(trade_id, event_type)
+        self._sent_alerts[key] = int(datetime.now().timestamp())
+    
+    def is_sent(self, trade_id: str, event_type: str) -> bool:
+        """Check if alert already sent for this trade and event type."""
+        key = self._get_alert_key(trade_id, event_type)
+        return key in self._sent_alerts
+    
+    def clear_trade_alerts(self, trade_id: str) -> None:
+        """Clear all alerts for a specific trade (when trade closes)."""
+        keys_to_remove = [k for k in self._sent_alerts.keys() if k.startswith(f"{trade_id}_")]
+        for key in keys_to_remove:
+            del self._sent_alerts[key]
+        logger.debug(f"Cleared {len(keys_to_remove)} alerts for trade {trade_id}")
 
 
-def _is_sent(msg_hash: str) -> bool:
-    """Check if message was already sent."""
-    return msg_hash in _sent_messages
+_alert_tracker = AlertTracker()
 
 
-def send_telegram(msg: str) -> bool:
-    """
-    Send message via Telegram.
-    """
-    if not TELEGRAM_TOKEN or not CHAT_ID:
+def get_alert_tracker() -> AlertTracker:
+    return _alert_tracker
+
+
+def send_telegram(message: str) -> bool:
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         logger.warning("Telegram credentials not configured")
         return False
-        
+
     try:
+        import requests
+        
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        response = requests.post(
-            url, 
-            data={"chat_id": CHAT_ID, "text": msg},
-            timeout=5
-        )
+        payload = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": message,
+            "parse_mode": "HTML"
+        }
+        
+        response = requests.post(url, json=payload, timeout=10)
         
         if response.status_code == 200:
-            logger.info("Telegram message sent")
+            logger.info("Telegram message sent successfully")
             return True
         else:
-            logger.error(f"Telegram error: {response.status_code}")
+            logger.error(f"Telegram error: {response.status_code} - {response.text}")
             return False
             
     except Exception as e:
-        logger.error(f"Telegram failed: {str(e)}")
+        logger.error(f"Error sending Telegram message: {str(e)}")
         return False
 
 
 def format_signal_alert(signal: Dict) -> str:
-    """
-    Format new signal alert.
-    """
+    signal_type = signal.get('type', 'UNKNOWN')
+    entry = signal.get('entry', 0)
+    sl = signal.get('sl', 0)
+    target = signal.get('target', 0)
+    trend = signal.get('trend', 'N/A')
+    
     return (
-        f"🚨 NEW SIGNAL\n"
-        f"ID: {signal.get('id', 'N/A')}\n"
-        f"Type: {signal.get('type', 'N/A')}\n"
-        f"Entry: {signal.get('entry', 0):.2f}\n"
-        f"SL: {signal.get('sl', 0):.2f}\n"
-        f"Target: {signal.get('target', 0):.2f}"
+        f"<b>🔔 NEW SIGNAL</b>\n"
+        f"Type: <b>{signal_type}</b>\n"
+        f"Entry: {entry}\n"
+        f"SL: {sl}\n"
+        f"Target: {target}\n"
+        f"Trend: {trend}\n"
+        f"Time: {datetime.now().strftime('%H:%M:%S')}"
     )
 
 
 def format_win_alert(trade: Dict) -> str:
-    """
-    Format WIN alert.
-    """
+    trade_type = trade.get('type', 'UNKNOWN')
+    entry = trade.get('entry', 0)
+    exit_price = trade.get('exit_price', 0)
+    pnl = trade.get('pnl', 0)
+    
     return (
-        f"✅ TARGET HIT - WIN\n"
-        f"ID: {trade.get('id', 'N/A')}\n"
-        f"Type: {trade.get('type', 'N/A')}\n"
-        f"Entry: {trade.get('entry', 0):.2f}\n"
-        f"Exit: {trade.get('exit_price', 0):.2f}\n"
-        f"P&L: +{trade.get('pnl', 0):.2f}"
+        f"<b>✅ TRADE WIN</b>\n"
+        f"Type: <b>{trade_type}</b>\n"
+        f"Entry: {entry}\n"
+        f"Exit: {exit_price}\n"
+        f"PnL: <b>+{pnl}</b>\n"
+        f"Time: {datetime.now().strftime('%H:%M:%S')}"
     )
 
 
 def format_loss_alert(trade: Dict) -> str:
-    """
-    Format LOSS alert.
-    """
+    trade_type = trade.get('type', 'UNKNOWN')
+    entry = trade.get('entry', 0)
+    exit_price = trade.get('exit_price', 0)
+    pnl = trade.get('pnl', 0)
+    
     return (
-        f"❌ STOP LOSS - LOSS\n"
-        f"ID: {trade.get('id', 'N/A')}\n"
-        f"Type: {trade.get('type', 'N/A')}\n"
-        f"Entry: {trade.get('entry', 0):.2f}\n"
-        f"Exit: {trade.get('exit_price', 0):.2f}\n"
-        f"P&L: {trade.get('pnl', 0):.2f}"
+        f"<b>❌ TRADE LOSS</b>\n"
+        f"Type: <b>{trade_type}</b>\n"
+        f"Entry: {entry}\n"
+        f"Exit: {exit_price}\n"
+        f"PnL: <b>{pnl}</b>\n"
+        f"Time: {datetime.now().strftime('%H:%M:%S')}"
     )
 
 
-def send_signal_alert(signal: Dict) -> bool:
-    """
-    Send signal alert.
-    """
-    trade_id = signal.get("id", "")
-    msg_hash = hash(f"signal_{trade_id}")
+def format_timeout_alert(trade: Dict) -> str:
+    trade_type = trade.get('type', 'UNKNOWN')
+    entry = trade.get('entry', 0)
+    exit_price = trade.get('exit_price', 0)
+    pnl = trade.get('pnl', 0)
+    
+    return (
+        f"<b>⏱️ TRADE TIMEOUT</b>\n"
+        f"Type: <b>{trade_type}</b>\n"
+        f"Entry: {entry}\n"
+        f"Exit (current): {exit_price}\n"
+        f"PnL: <b>{pnl}</b>\n"
+        f"Reason: 30min timeout\n"
+        f"Time: {datetime.now().strftime('%H:%M:%S')}"
+    )
 
-    if _is_sent(msg_hash):
-        logger.debug("Signal alert already sent")
+
+def send_signal_alert(signal: Dict, trade_id: str) -> bool:
+    tracker = get_alert_tracker()
+    
+    if tracker.is_sent(trade_id, 'signal'):
+        logger.debug(f"Signal alert already sent for trade {trade_id}")
         return False
-
-    success = send_telegram(format_signal_alert(signal))
+    
+    message = format_signal_alert(signal)
+    success = send_telegram(message)
+    
     if success:
-        _add_sent_message(msg_hash)
+        tracker.mark_sent(trade_id, 'signal')
+        logger.info(f"Signal alert sent for trade {trade_id}")
+    
     return success
 
 
 def send_win_alert(trade: Dict) -> bool:
-    """
-    Send WIN alert.
-    """
-    trade_id = trade.get("id")
-    if not trade_id:
+    tracker = get_alert_tracker()
+    trade_id = trade.get('id', '')
+    
+    if tracker.is_sent(trade_id, 'win'):
+        logger.debug(f"Win alert already sent for trade {trade_id}")
         return False
-
-    msg_hash = hash(f"win_{trade_id}")
-    if _is_sent(msg_hash):
-        logger.debug(f"Win alert sent: {trade_id}")
-        return False
-
-    success = send_telegram(format_win_alert(trade))
+    
+    message = format_win_alert(trade)
+    success = send_telegram(message)
+    
     if success:
-        _add_sent_message(msg_hash)
+        tracker.mark_sent(trade_id, 'win')
+        logger.info(f"Win alert sent for trade {trade_id}")
+    
     return success
 
 
 def send_loss_alert(trade: Dict) -> bool:
-    """
-    Send LOSS alert.
-    """
-    trade_id = trade.get("id")
-    if not trade_id:
+    tracker = get_alert_tracker()
+    trade_id = trade.get('id', '')
+    
+    if tracker.is_sent(trade_id, 'loss'):
+        logger.debug(f"Loss alert already sent for trade {trade_id}")
         return False
-
-    msg_hash = hash(f"loss_{trade_id}")
-    if _is_sent(msg_hash):
-        logger.debug(f"Loss alert sent: {trade_id}")
-        return False
-
-    success = send_telegram(format_loss_alert(trade))
+    
+    message = format_loss_alert(trade)
+    success = send_telegram(message)
+    
     if success:
-        _add_sent_message(msg_hash)
+        tracker.mark_sent(trade_id, 'loss')
+        logger.info(f"Loss alert sent for trade {trade_id}")
+    
     return success
+
+
+def send_timeout_alert(trade: Dict) -> bool:
+    tracker = get_alert_tracker()
+    trade_id = trade.get('id', '')
+    
+    if tracker.is_sent(trade_id, 'timeout'):
+        logger.debug(f"Timeout alert already sent for trade {trade_id}")
+        return False
+    
+    message = format_timeout_alert(trade)
+    success = send_telegram(message)
+    
+    if success:
+        tracker.mark_sent(trade_id, 'timeout')
+        logger.info(f"Timeout alert sent for trade {trade_id}")
+    
+    return success
+
+
+def clear_trade_alerts(trade_id: str) -> None:
+    """Clear all alerts for a closed trade."""
+    tracker = get_alert_tracker()
+    tracker.clear_trade_alerts(trade_id)
