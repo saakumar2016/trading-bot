@@ -49,37 +49,51 @@ def _normalize_dataframe(df: pd.DataFrame) -> Optional[pd.DataFrame]:
     if df is None:
         return None
 
-    # Normalize columns to expected Dhan output
     df = df.copy()
-    column_map = {
+    ohlc_map = {
         "open": "Open",
         "high": "High",
         "low": "Low",
         "close": "Close"
     }
+    timestamp_candidates = {
+        "timestamp": "timestamp",
+        "time": "timestamp",
+        "date": "timestamp",
+        "datetime": "timestamp"
+    }
 
     lower_cols = {col.lower(): col for col in df.columns}
-    normalized = {}
-    for lower_name, expected_name in column_map.items():
-        if lower_name in lower_cols:
-            original = lower_cols[lower_name]
-            normalized[original] = expected_name
+    rename_map = {}
 
-    if not normalized:
+    for lower_name, expected_name in ohlc_map.items():
+        if lower_name in lower_cols:
+            rename_map[lower_cols[lower_name]] = expected_name
+
+    for lower_name, expected_name in timestamp_candidates.items():
+        if lower_name in lower_cols:
+            rename_map[lower_cols[lower_name]] = expected_name
+            break
+
+    if not any(col.lower() in lower_cols for col in ohlc_map):
         logger.error("Dhan data has no OHLC columns to normalize")
         return None
 
-    df = df.rename(columns=normalized)
+    df = df.rename(columns=rename_map)
 
-    required_columns = list(column_map.values())
+    required_columns = list(ohlc_map.values())
     missing = [col for col in required_columns if col not in df.columns]
     if missing:
         logger.error(f"Dhan data missing required columns after normalization: {missing}")
         return None
 
-    df = df[required_columns].copy()
-    df = df.apply(pd.to_numeric, errors="coerce")
-    df = df.dropna()
+    keep_columns = required_columns.copy()
+    if "timestamp" in df.columns:
+        keep_columns.append("timestamp")
+
+    df = df[keep_columns].copy()
+    df[required_columns] = df[required_columns].apply(pd.to_numeric, errors="coerce")
+    df = df.dropna(subset=required_columns)
 
     return df
 
@@ -97,18 +111,20 @@ def _validate_dataframe(df: pd.DataFrame) -> bool:
         logger.error(f"Dhan OHLC data has too few candles: {len(df)} < 80")
         return False
 
-    # Check if last candle is recent (not stale)
-    if 'timestamp' in df.columns:
-        try:
-            last_timestamp = pd.to_datetime(df['timestamp'].iloc[-1])
-            now = datetime.now()
-            # Allow up to 5 minutes staleness for intraday data
-            max_age = timedelta(minutes=5)
-            if now - last_timestamp > max_age:
-                logger.error(f"Dhan data is stale: last candle at {last_timestamp}, current time {now}")
-                return False
-        except Exception as e:
-            logger.warning(f"Could not validate timestamp freshness: {str(e)}")
+    last_timestamp = None
+    if "timestamp" in df.columns:
+        last_timestamp = pd.to_datetime(df["timestamp"].iloc[-1], errors="coerce")
+    elif isinstance(df.index, pd.DatetimeIndex) and len(df.index) > 0:
+        last_timestamp = df.index[-1]
+
+    if last_timestamp is not None and not pd.isna(last_timestamp):
+        now = datetime.now()
+        max_age = timedelta(minutes=5)
+        if now - last_timestamp > max_age:
+            logger.error(f"Dhan data is stale: last candle at {last_timestamp}, current time {now}")
+            return False
+    else:
+        logger.warning("Dhan data freshness could not be validated; no timestamp available")
 
     return True
 
